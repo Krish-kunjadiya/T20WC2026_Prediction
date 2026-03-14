@@ -13,7 +13,9 @@ const Layout = ({ children }) => {
           </p>
         </div>
         <nav className="flex-1 px-4 py-4 space-y-1">
-          <NavItem to="/" label="Simulator" />
+          <NavItem to="/" label="Dashboard" />
+          <NavItem to="/simulator" label="Simulator" />
+          <NavItem to="/live-state" label="Live State" />
           <NavItem to="/players" label="Player Analytics" />
           <NavItem to="/war-room" label="War Room" />
         </nav>
