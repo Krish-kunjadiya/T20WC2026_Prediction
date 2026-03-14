@@ -4,8 +4,7 @@ import { Database, Home, User, BarChart2, Mic, BrainCircuit, MessageSquare, Sett
 
 const Layout = () => {
   const navItems = [
-    { name: 'Home', path: '/', icon: Home },
-    { name: 'Data Quality & EDA', path: '/data-quality', icon: Database },
+    { name: 'Dashboard', path: '/', icon: Home },
     { name: 'Coach', path: '/coach', icon: User },
     { name: 'Analyst', path: '/analyst', icon: BarChart2 },
     { name: 'Commentator', path: '/commentator', icon: Mic },
