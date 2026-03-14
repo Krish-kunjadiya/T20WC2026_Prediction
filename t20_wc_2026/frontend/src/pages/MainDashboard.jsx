@@ -44,13 +44,11 @@ export default function MainDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([
-      fetch('http://localhost:8001/dashboard/kpis').then((res) => res.json()),
-      fetch('http://localhost:8001/dashboard/charts').then((res) => res.json()),
-    ])
-      .then(([kpiData, chartData]) => {
-        setKpis(kpiData || {});
-        setCharts(chartData || {});
+    fetch('http://localhost:8001/dashboard/summary')
+      .then((res) => res.json())
+      .then((data) => {
+        setKpis(data?.kpis || {});
+        setCharts(data?.charts || {});
       })
       .catch((err) => {
         console.error(err);

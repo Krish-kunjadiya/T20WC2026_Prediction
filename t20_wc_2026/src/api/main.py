@@ -45,6 +45,8 @@ RESULTS_DIR = os.path.join(_ROOT, "results")
 _MODEL_CACHE: dict[str, Any] = {}
 _DATA_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _DATA_CACHE_TTL_SECONDS = int(os.getenv("API_DATA_CACHE_TTL_SECONDS", "120"))
+_RESPONSE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_RESPONSE_CACHE_TTL_SECONDS = int(os.getenv("API_RESPONSE_CACHE_TTL_SECONDS", "180"))
 
 
 def load_model(filename: str) -> Any:
@@ -82,6 +84,25 @@ def clear_runtime_caches() -> None:
     """Clear in-memory model and data caches."""
     _MODEL_CACHE.clear()
     _DATA_CACHE.clear()
+    _RESPONSE_CACHE.clear()
+
+
+def get_cached_response(cache_key: str) -> dict[str, Any] | None:
+    """Return cached API payload if still valid."""
+    cached = _RESPONSE_CACHE.get(cache_key)
+    if not cached:
+        return None
+
+    ts, payload = cached
+    if (time.time() - ts) > _RESPONSE_CACHE_TTL_SECONDS:
+        return None
+    return payload
+
+
+def set_cached_response(cache_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Store API payload in in-memory response cache."""
+    _RESPONSE_CACHE[cache_key] = (time.time(), payload)
+    return payload
 
 
 def read_csv_if_exists(path: str) -> pd.DataFrame:
@@ -1178,6 +1199,10 @@ def chat_preview_endpoint(req: MatchPreviewRequest) -> dict[str, str]:
 
 @app.get("/dashboard/kpis")
 def get_dashboard_kpis() -> dict[str, Any]:
+    cached = get_cached_response("dashboard_kpis")
+    if cached is not None:
+        return cached
+
     matches = load_matches_frame()
     deliveries = load_deliveries_frame()
 
@@ -1194,16 +1219,21 @@ def get_dashboard_kpis() -> dict[str, Any]:
     else:
         chase_win = 0.0
 
-    return {
+    payload = {
         "total_matches": total_matches,
         "total_teams": total_teams,
         "avg_first_innings_score": avg_first_score,
         "chasing_win_pct": round(float(chase_win), 1),
     }
+    return set_cached_response("dashboard_kpis", payload)
 
 
 @app.get("/dashboard/charts")
 def get_dashboard_charts() -> dict[str, Any]:
+    cached = get_cached_response("dashboard_charts")
+    if cached is not None:
+        return cached
+
     matches = load_matches_frame()
     deliveries = load_deliveries_frame()
     players = load_players_frame()
@@ -1384,7 +1414,7 @@ def get_dashboard_charts() -> dict[str, Any]:
             for _, row in sample.iterrows()
         ]
 
-    return {
+    payload = {
         "evolutionData": evolution_data,
         "topBatsmenData": top_batsmen_data,
         "topBowlersData": top_bowlers_data,
@@ -1396,6 +1426,33 @@ def get_dashboard_charts() -> dict[str, Any]:
         "deathBowlingLeadersData": death_bowling_leaders_data,
         "playerArchetypesData": player_archetypes_data,
     }
+    return set_cached_response("dashboard_charts", payload)
+
+
+@app.get("/dashboard/summary")
+def get_dashboard_summary() -> dict[str, Any]:
+    cached = get_cached_response("dashboard_summary")
+    if cached is not None:
+        return cached
+
+    payload = {
+        "kpis": get_dashboard_kpis(),
+        "charts": get_dashboard_charts(),
+    }
+    return set_cached_response("dashboard_summary", payload)
+
+
+@app.on_event("startup")
+def prewarm_dashboard_summary_cache() -> None:
+    """Warm dashboard caches so first UI load is faster."""
+    if os.getenv("API_PREWARM_DASHBOARD", "1") != "1":
+        return
+
+    try:
+        get_dashboard_summary()
+    except Exception:
+        # Do not block API startup if prewarm fails.
+        pass
 
 
 @app.get("/commentator/meta")
