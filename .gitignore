@@ -1,1 +1,44 @@
 /t20_wc_2026
+
+# Node modules and JS logs
+node_modules/
+npm-debug.log
+yarn-error.log
+yarn.lock
+package-lock.json
+
+# Python and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+dist/
+build/
+*.egg-info/
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+
+# Data and models (large files that shouldn't be pushed unnecessarily)
+*.parquet
+*.csv
+backend/models/*.json
+t20s_csv2/
+10/
+
+# Ignore custom python script test files we made
+patch*.py
+test*.py
+build_dataset.py
