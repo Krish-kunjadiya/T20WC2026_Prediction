@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: t20wc_db
+    environment:
+      POSTGRES_USER: t20wc_user
+      POSTGRES_PASSWORD: t20wc_pass
+      POSTGRES_DB: t20wc_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    command: >
+      postgres -c shared_preload_libraries=vector
+               -c max_connections=200
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: t20wc_backend
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql+psycopg2://t20wc_user:t20wc_pass@db:5432/t20wc_db
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MATCHES_DATA_PATH: /app/t20s_csv2/matches.csv
+    volumes:
+      - ./t20s_csv2:/app/t20s_csv2
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: t20wc_frontend
+    depends_on:
+      - backend
+    environment:
+      VITE_API_URL: http://localhost:8000/api
+    ports:
+      - "3000:3000"
+
+volumes:
+  db_data:
+
