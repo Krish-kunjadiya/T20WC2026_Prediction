@@ -65,10 +65,19 @@ def train_association_rules():
     df_enc = pd.DataFrame(te_array, columns=te.columns_)
 
     freq_items = apriori(df_enc, min_support=0.2, use_colnames=True)
-    rules = association_rules(freq_items, metric="confidence", min_threshold=0.5, num_itemsets=len(freq_items))
-    rules = rules.sort_values("lift", ascending=False)
+    if freq_items.empty:
+        rules = pd.DataFrame(
+            columns=["antecedents", "consequents", "support", "confidence", "lift"]
+        )
+    else:
+        rules = association_rules(freq_items, metric="confidence", min_threshold=0.5)
+        rules = rules.sort_values("lift", ascending=False)
 
-    win_rules = rules[rules["consequents"].astype(str).str.contains("won")].head(10)
+    win_rules = (
+        rules[rules["consequents"].astype(str).str.contains("won")].head(10)
+        if not rules.empty
+        else pd.DataFrame()
+    )
 
     print(f"\n  📊 Total Rules Found: {len(rules)}")
     print(f"  🏆 Top Winning Condition Rules:")

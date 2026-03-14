@@ -56,16 +56,52 @@ def remove_outliers_iqr(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df
 
 
+def mode_or_unknown(series: pd.Series) -> str:
+    """Return most frequent non-empty string value, else 'Unknown'."""
+    clean = series.fillna("").astype(str).str.strip()
+    clean = clean[clean != ""]
+    if clean.empty:
+        return "Unknown"
+    mode = clean.mode()
+    return str(mode.iloc[0]) if not mode.empty else "Unknown"
+
+
 def transform_matches() -> None:
     """Transform bronze.raw_matches into silver.clean_matches."""
     print("\nTransforming: bronze.raw_matches -> silver.clean_matches")
     df = pd.read_sql("SELECT * FROM bronze.raw_matches", engine)
     print(f"  Loaded {len(df)} rows")
 
+    if df.empty:
+        cols = [
+            "match_id",
+            "match_date",
+            "venue",
+            "city",
+            "team1",
+            "team2",
+            "toss_winner",
+            "toss_decision",
+            "winner",
+            "win_by_runs",
+            "win_by_wickets",
+            "player_of_match",
+            "is_day_night",
+            "tournament_phase",
+        ]
+        pd.DataFrame(columns=cols).to_sql("clean_matches", engine, schema="silver", if_exists="replace", index=False)
+        print("  No rows available in bronze.raw_matches")
+        return
+
     df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
     before = len(df)
     df = df.drop_duplicates()
     print(f"  Duplicates removed: {before - len(df)}")
+
+    if "match_no" in df.columns:
+        df["match_id"] = df["match_no"].fillna("").astype(str).str.strip()
+    else:
+        df["match_id"] = ""
 
     if "date" in df.columns:
         df["match_date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -82,6 +118,11 @@ def transform_matches() -> None:
     )
 
     df["winner"] = df.get("winner", pd.Series(index=df.index)).fillna("No Result")
+    df["toss_winner"] = df.get("toss_winner", pd.Series(index=df.index)).fillna("Unknown")
+    df["team1"] = df.get("team1", pd.Series(index=df.index)).fillna("Unknown")
+    df["team2"] = df.get("team2", pd.Series(index=df.index)).fillna("Unknown")
+    df["venue"] = df.get("venue", pd.Series(index=df.index)).fillna("Unknown Venue")
+    df["city"] = df.get("city", pd.Series(index=df.index)).fillna("Unknown")
     df["player_of_match"] = "Unknown"
     df["toss_decision"] = df.get("toss_decision", pd.Series(index=df.index)).fillna("bat")
 
@@ -106,7 +147,7 @@ def transform_matches() -> None:
     df["tournament_phase"] = phase_df.apply(phase, axis=1)
 
     df["is_day_night"] = False
-    df["match_id"] = ["M" + str(i + 1).zfill(4) for i in range(len(df))]
+    df = df[df["match_id"] != ""].copy()
 
     keep = [
         "match_id",
@@ -190,38 +231,205 @@ def transform_deliveries() -> None:
 
 
 def transform_players() -> None:
-    """Transform squads + batting + bowling stats into silver.clean_players."""
-    print("\nTransforming: bronze squads/stats -> silver.clean_players")
+    """Transform Cricsheet squads + deliveries into silver.clean_players."""
+    print("\nTransforming: bronze squads/deliveries -> silver.clean_players")
 
     squads = pd.read_sql("SELECT * FROM bronze.raw_squads", engine)
-    batting = pd.read_sql("SELECT * FROM bronze.raw_batting_stats", engine)
-    bowling = pd.read_sql("SELECT * FROM bronze.raw_bowling_stats", engine)
+    deliveries = pd.read_sql("SELECT * FROM bronze.raw_deliveries", engine)
 
-    for frame in (squads, batting, bowling):
-        frame.columns = [c.lower().strip().replace(" ", "_") for c in frame.columns]
+    if not squads.empty:
+        squads.columns = [c.lower().strip().replace(" ", "_") for c in squads.columns]
+        squads["player_name"] = squads.get("player_name", pd.Series(index=squads.index)).fillna("").astype(str).str.strip().str.title()
+        squads["team"] = squads.get("team", pd.Series(index=squads.index)).fillna("Unknown").astype(str).str.strip()
+        squads["role"] = squads.get("role", pd.Series(index=squads.index)).fillna("Unknown").astype(str).str.strip()
 
-    squads = squads.rename(columns={"player_name": "player_name"})
-    batting = batting.rename(columns={"player": "player_name", "average": "batting_avg"})
-    bowling = bowling.rename(columns={"player": "player_name", "average": "bowling_avg"})
+    if not deliveries.empty:
+        deliveries.columns = [c.lower().strip().replace(" ", "_") for c in deliveries.columns]
+        deliveries["striker"] = deliveries.get("striker", pd.Series(index=deliveries.index)).fillna("").astype(str).str.strip().str.title()
+        deliveries["bowler"] = deliveries.get("bowler", pd.Series(index=deliveries.index)).fillna("").astype(str).str.strip().str.title()
+        deliveries["player_dismissed"] = deliveries.get("player_dismissed", pd.Series(index=deliveries.index)).fillna("").astype(str).str.strip().str.title()
+        deliveries["batting_team"] = deliveries.get("batting_team", pd.Series(index=deliveries.index)).fillna("Unknown").astype(str).str.strip()
+        deliveries["bowling_team"] = deliveries.get("bowling_team", pd.Series(index=deliveries.index)).fillna("Unknown").astype(str).str.strip()
+        deliveries["match_id"] = deliveries.get("match_id", pd.Series(index=deliveries.index)).fillna("").astype(str).str.strip()
+        deliveries["runs_off_bat"] = deliveries.get("runs_off_bat", 0).fillna(0).apply(safe_int)
+        deliveries["extras"] = deliveries.get("extras", 0).fillna(0).apply(safe_int)
+        deliveries["total_runs"] = deliveries["runs_off_bat"] + deliveries["extras"]
 
-    for frame in (squads, batting, bowling):
-        frame["player_name"] = frame["player_name"].astype(str).str.strip().str.title()
+    if squads.empty and deliveries.empty:
+        cols = [
+            "player_id",
+            "player_name",
+            "country",
+            "role",
+            "matches",
+            "runs",
+            "batting_avg",
+            "strike_rate",
+            "hundreds",
+            "fifties",
+            "wickets",
+            "bowling_avg",
+            "economy",
+        ]
+        pd.DataFrame(columns=cols).to_sql("clean_players", engine, schema="silver", if_exists="replace", index=False)
+        print("  No rows available in bronze.raw_squads/raw_deliveries")
+        return
 
-    df = squads.drop_duplicates(subset=["player_name"]).copy()
+    batsman_stats = pd.DataFrame(columns=["player_name", "matches_batted", "runs", "balls_faced", "fours", "sixes", "dismissals", "batting_avg", "strike_rate", "hundreds", "fifties"])
+    bowler_stats = pd.DataFrame(columns=["player_name", "matches_bowled", "wickets", "bowling_avg", "economy"])
+    batsman_team_map = pd.DataFrame(columns=["player_name", "bat_team"])
+    bowler_team_map = pd.DataFrame(columns=["player_name", "bowl_team"])
 
-    df = df.merge(
-        batting[["player_name", "runs", "batting_avg", "strike_rate", "hundreds", "fifties"]]
-        .drop_duplicates("player_name"),
-        on="player_name",
-        how="left",
+    if not deliveries.empty:
+        batsman_stats = (
+            deliveries.groupby("striker", dropna=False)
+            .agg(
+                matches_batted=("match_id", "nunique"),
+                runs=("runs_off_bat", "sum"),
+                balls_faced=("ball", "count"),
+                fours=("runs_off_bat", lambda x: int((x == 4).sum())),
+                sixes=("runs_off_bat", lambda x: int((x == 6).sum())),
+            )
+            .reset_index()
+            .rename(columns={"striker": "player_name"})
+        )
+
+        dismissals = (
+            deliveries[deliveries["player_dismissed"] != ""]
+            .groupby("player_dismissed")
+            .size()
+            .reset_index(name="dismissals")
+            .rename(columns={"player_dismissed": "player_name"})
+        )
+        batsman_stats = batsman_stats.merge(dismissals, on="player_name", how="left")
+        batsman_stats["dismissals"] = batsman_stats["dismissals"].fillna(0).apply(safe_int)
+
+        innings_scores = (
+            deliveries.groupby(["match_id", "striker"], dropna=False)["runs_off_bat"]
+            .sum()
+            .reset_index()
+            .rename(columns={"striker": "player_name", "runs_off_bat": "innings_runs"})
+        )
+        fifties = (
+            innings_scores[(innings_scores["innings_runs"] >= 50) & (innings_scores["innings_runs"] < 100)]
+            .groupby("player_name")
+            .size()
+            .reset_index(name="fifties")
+        )
+        hundreds = (
+            innings_scores[innings_scores["innings_runs"] >= 100]
+            .groupby("player_name")
+            .size()
+            .reset_index(name="hundreds")
+        )
+        batsman_stats = batsman_stats.merge(fifties, on="player_name", how="left")
+        batsman_stats = batsman_stats.merge(hundreds, on="player_name", how="left")
+        batsman_stats["fifties"] = batsman_stats["fifties"].fillna(0).apply(safe_int)
+        batsman_stats["hundreds"] = batsman_stats["hundreds"].fillna(0).apply(safe_int)
+
+        batsman_stats["batting_avg"] = (
+            batsman_stats["runs"] / batsman_stats["dismissals"].replace(0, pd.NA)
+        ).fillna(batsman_stats["runs"])
+        batsman_stats["strike_rate"] = (
+            batsman_stats["runs"] / batsman_stats["balls_faced"].replace(0, pd.NA) * 100
+        ).fillna(0)
+
+        wicket_type = deliveries.get("wicket_type", pd.Series(index=deliveries.index)).fillna("").astype(str).str.lower().str.strip()
+        wicket_mask = (
+            (deliveries["player_dismissed"] != "")
+            & (~wicket_type.isin(["run out", "retired hurt", "obstructing the field"]))
+        )
+
+        wickets_by_bowler = (
+            deliveries[wicket_mask]
+            .groupby("bowler")
+            .size()
+            .reset_index(name="wickets")
+            .rename(columns={"bowler": "player_name"})
+        )
+
+        bowler_stats = (
+            deliveries.groupby("bowler", dropna=False)
+            .agg(
+                matches_bowled=("match_id", "nunique"),
+                runs_conceded=("total_runs", "sum"),
+                balls_bowled=("ball", "count"),
+            )
+            .reset_index()
+            .rename(columns={"bowler": "player_name"})
+        )
+        bowler_stats = bowler_stats.merge(wickets_by_bowler, on="player_name", how="left")
+        bowler_stats["wickets"] = bowler_stats["wickets"].fillna(0).apply(safe_int)
+        bowler_stats["overs_bowled"] = bowler_stats["balls_bowled"] / 6.0
+        bowler_stats["economy"] = (
+            bowler_stats["runs_conceded"] / bowler_stats["overs_bowled"].replace(0, pd.NA)
+        ).fillna(0)
+        bowler_stats["bowling_avg"] = (
+            bowler_stats["runs_conceded"] / bowler_stats["wickets"].replace(0, pd.NA)
+        ).fillna(0)
+        bowler_stats = bowler_stats[["player_name", "matches_bowled", "wickets", "bowling_avg", "economy"]]
+
+        batsman_team_map = (
+            deliveries.groupby("striker")["batting_team"]
+            .agg(mode_or_unknown)
+            .reset_index()
+            .rename(columns={"striker": "player_name", "batting_team": "bat_team"})
+        )
+        bowler_team_map = (
+            deliveries.groupby("bowler")["bowling_team"]
+            .agg(mode_or_unknown)
+            .reset_index()
+            .rename(columns={"bowler": "player_name", "bowling_team": "bowl_team"})
+        )
+
+    player_pool = set()
+    if not squads.empty:
+        player_pool.update(squads["player_name"].tolist())
+    if not batsman_stats.empty:
+        player_pool.update(batsman_stats["player_name"].tolist())
+    if not bowler_stats.empty:
+        player_pool.update(bowler_stats["player_name"].tolist())
+
+    player_names = sorted([p for p in player_pool if str(p).strip() != ""])
+    df = pd.DataFrame({"player_name": player_names})
+
+    squad_team = pd.DataFrame(columns=["player_name", "squad_team"])
+    squad_role = pd.DataFrame(columns=["player_name", "squad_role"])
+    if not squads.empty:
+        squad_team = (
+            squads.groupby("player_name")["team"]
+            .agg(mode_or_unknown)
+            .reset_index()
+            .rename(columns={"team": "squad_team"})
+        )
+        squad_role = (
+            squads.groupby("player_name")["role"]
+            .agg(mode_or_unknown)
+            .reset_index()
+            .rename(columns={"role": "squad_role"})
+        )
+
+    df = df.merge(squad_team, on="player_name", how="left")
+    df = df.merge(squad_role, on="player_name", how="left")
+    df = df.merge(batsman_stats, on="player_name", how="left")
+    df = df.merge(bowler_stats, on="player_name", how="left")
+    df = df.merge(batsman_team_map, on="player_name", how="left")
+    df = df.merge(bowler_team_map, on="player_name", how="left")
+
+    df["country"] = (
+        df["squad_team"]
+        .fillna("")
+        .where(df["squad_team"].fillna("") != "", df["bat_team"].fillna(""))
+        .where(
+            (
+                df["squad_team"].fillna("") != ""
+            ) | (df["bat_team"].fillna("") != ""),
+            df["bowl_team"].fillna(""),
+        )
     )
-    df = df.merge(
-        bowling[["player_name", "wickets", "bowling_avg", "economy"]].drop_duplicates("player_name"),
-        on="player_name",
-        how="left",
-    )
+    df["country"] = df["country"].replace("", "Unknown")
 
-    for col in ["runs", "hundreds", "fifties", "wickets"]:
+    for col in ["runs", "hundreds", "fifties", "wickets", "matches_batted", "matches_bowled"]:
         df[col] = df.get(col, 0).fillna(0).apply(safe_int)
 
     for col in ["batting_avg", "strike_rate", "bowling_avg", "economy"]:
@@ -230,23 +438,30 @@ def transform_players() -> None:
     remove_outliers_iqr(df, "strike_rate")
     remove_outliers_iqr(df, "batting_avg")
 
-    if "role" not in df.columns:
-        def infer_role(row: pd.Series) -> str:
-            w = safe_float(row.get("wickets", 0))
-            r = safe_float(row.get("runs", 0))
-            if w > 10 and r > 100:
-                return "All-Rounder"
-            if w > 5:
-                return "Bowler"
-            if r > 100:
-                return "Batter"
-            return "Unknown"
+    def infer_role(row: pd.Series) -> str:
+        squad_defined = str(row.get("squad_role", "")).strip()
+        if squad_defined and squad_defined.lower() != "unknown":
+            return squad_defined
+        w = safe_float(row.get("wickets", 0))
+        r = safe_float(row.get("runs", 0))
+        if w >= 20 and r >= 300:
+            return "All-Rounder"
+        if w >= 20:
+            return "Bowler"
+        if r >= 300:
+            return "Batter"
+        if w > 0 and r > 0:
+            return "All-Rounder"
+        if r > 0:
+            return "Batter"
+        if w > 0:
+            return "Bowler"
+        return "Unknown"
 
-        df["role"] = df.apply(infer_role, axis=1)
-
-    df["country"] = df.get("team", pd.Series(index=df.index)).fillna("Unknown")
+    df["role"] = df.apply(infer_role, axis=1)
+    df["matches"] = df[["matches_batted", "matches_bowled"]].max(axis=1).fillna(0).apply(safe_int)
+    df = df.drop_duplicates(subset=["player_name"]).sort_values("player_name").reset_index(drop=True)
     df["player_id"] = ["P" + str(i + 1).zfill(5) for i in range(len(df))]
-    df["matches"] = 0
 
     keep = [
         "player_id",
@@ -278,6 +493,11 @@ def transform_venues() -> None:
     """Transform bronze.raw_venues into silver.clean_venues."""
     print("\nTransforming: bronze.raw_venues -> silver.clean_venues")
     df = pd.read_sql("SELECT * FROM bronze.raw_venues", engine)
+
+    if df.empty:
+        # Fallback: derive venues from match metadata if raw_venues is empty.
+        df = pd.read_sql("SELECT DISTINCT venue AS venue_name, city FROM bronze.raw_matches", engine)
+
     df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
     print(f"  Loaded {len(df)} rows")
 
