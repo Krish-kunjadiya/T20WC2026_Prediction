@@ -42,6 +42,28 @@ def safe_int(val: Any, default: int = 0) -> int:
         return default
 
 
+def normalize_gender_value(value: Any, default: str = "unknown") -> str:
+    """Normalize gender labels to male/female/unknown."""
+    raw = str(value or "").strip().lower()
+    if raw in {"male", "men", "man", "m", "boys"}:
+        return "male"
+    if raw in {"female", "women", "woman", "f", "girls"}:
+        return "female"
+    if raw in {"", "unknown", "nan", "none", "null"}:
+        return default
+    return default
+
+
+def infer_gender_from_text(*texts: Any) -> str:
+    """Best-effort gender inference from event/team labels."""
+    blob = " ".join(str(t or "") for t in texts).lower()
+    if any(token in blob for token in ["women", "female", "girls"]):
+        return "female"
+    if any(token in blob for token in ["men", "male", "boys"]):
+        return "male"
+    return "unknown"
+
+
 def remove_outliers_iqr(df: pd.DataFrame, col: str) -> pd.DataFrame:
     """Report outlier count using IQR method without dropping rows."""
     if col not in df.columns or df.empty:
@@ -121,6 +143,7 @@ def transform_matches() -> None:
     df["toss_winner"] = df.get("toss_winner", pd.Series(index=df.index)).fillna("Unknown")
     df["team1"] = df.get("team1", pd.Series(index=df.index)).fillna("Unknown")
     df["team2"] = df.get("team2", pd.Series(index=df.index)).fillna("Unknown")
+    df["gender"] = df.get("gender", pd.Series(index=df.index)).apply(lambda x: normalize_gender_value(x, default="unknown"))
     df["venue"] = df.get("venue", pd.Series(index=df.index)).fillna("Unknown Venue")
     df["city"] = df.get("city", pd.Series(index=df.index)).fillna("Unknown")
     df["player_of_match"] = "Unknown"
@@ -146,6 +169,21 @@ def transform_matches() -> None:
     phase_df = pd.DataFrame({"_stage": stage_raw, "_group": group_raw})
     df["tournament_phase"] = phase_df.apply(phase, axis=1)
 
+    unknown_gender = df["gender"] == "unknown"
+    if unknown_gender.any():
+        inferred = df.apply(
+            lambda r: infer_gender_from_text(
+                r.get("stage", ""),
+                r.get("tournament_phase", ""),
+                r.get("team1", ""),
+                r.get("team2", ""),
+            ),
+            axis=1,
+        )
+        df.loc[unknown_gender & inferred.isin(["male", "female"]), "gender"] = inferred[
+            unknown_gender & inferred.isin(["male", "female"])
+        ]
+
     df["is_day_night"] = False
     df = df[df["match_id"] != ""].copy()
 
@@ -156,6 +194,7 @@ def transform_matches() -> None:
         "city",
         "team1",
         "team2",
+        "gender",
         "toss_winner",
         "toss_decision",
         "winner",
@@ -198,6 +237,21 @@ def transform_deliveries() -> None:
     df["batsman_runs"] = df.get("runs_off_bat", 0).apply(safe_int)
     df["extra_runs"] = df.get("extras", 0).apply(safe_int)
     df["total_runs"] = df["batsman_runs"] + df["extra_runs"]
+    df["gender"] = df.get("match_gender", pd.Series(index=df.index)).apply(lambda x: normalize_gender_value(x, default="unknown"))
+
+    unknown_gender = df["gender"] == "unknown"
+    if unknown_gender.any():
+        match_gender = pd.read_sql("SELECT match_no, gender FROM bronze.raw_matches", engine)
+        if not match_gender.empty:
+            match_gender.columns = [c.lower().strip().replace(" ", "_") for c in match_gender.columns]
+            match_gender["match_no"] = match_gender["match_no"].fillna("").astype(str).str.strip()
+            match_gender["gender"] = match_gender["gender"].apply(lambda x: normalize_gender_value(x, default="unknown"))
+            gender_map = dict(zip(match_gender["match_no"], match_gender["gender"]))
+            mapped = df["match_id"].astype(str).map(gender_map).fillna("unknown")
+            df.loc[unknown_gender, "gender"] = mapped[unknown_gender].apply(
+                lambda x: normalize_gender_value(x, default="unknown")
+            )
+
     df["dismissal_kind"] = df.get("wicket_type", pd.Series(index=df.index)).fillna("not_out")
 
     wicket_flag = (
@@ -223,6 +277,7 @@ def transform_deliveries() -> None:
         "total_runs",
         "is_wicket",
         "dismissal_kind",
+        "gender",
     ]
     df_clean = df[[c for c in keep if c in df.columns]].copy()
 
@@ -236,11 +291,24 @@ def transform_players() -> None:
 
     squads = pd.read_sql("SELECT * FROM bronze.raw_squads", engine)
     deliveries = pd.read_sql("SELECT * FROM bronze.raw_deliveries", engine)
+    matches = pd.read_sql("SELECT match_no, gender FROM bronze.raw_matches", engine)
+
+    match_gender_map: dict[str, str] = {}
+    if not matches.empty:
+        matches.columns = [c.lower().strip().replace(" ", "_") for c in matches.columns]
+        matches["match_no"] = matches.get("match_no", pd.Series(index=matches.index)).fillna("").astype(str).str.strip()
+        matches["gender"] = matches.get("gender", pd.Series(index=matches.index)).apply(
+            lambda x: normalize_gender_value(x, default="unknown")
+        )
+        match_gender_map = dict(zip(matches["match_no"], matches["gender"]))
 
     if not squads.empty:
         squads.columns = [c.lower().strip().replace(" ", "_") for c in squads.columns]
         squads["player_name"] = squads.get("player_name", pd.Series(index=squads.index)).fillna("").astype(str).str.strip().str.title()
         squads["team"] = squads.get("team", pd.Series(index=squads.index)).fillna("Unknown").astype(str).str.strip()
+        squads["gender"] = squads.get("gender", pd.Series(index=squads.index)).apply(
+            lambda x: normalize_gender_value(x, default="unknown")
+        )
         squads["role"] = squads.get("role", pd.Series(index=squads.index)).fillna("Unknown").astype(str).str.strip()
 
     if not deliveries.empty:
@@ -251,6 +319,15 @@ def transform_players() -> None:
         deliveries["batting_team"] = deliveries.get("batting_team", pd.Series(index=deliveries.index)).fillna("Unknown").astype(str).str.strip()
         deliveries["bowling_team"] = deliveries.get("bowling_team", pd.Series(index=deliveries.index)).fillna("Unknown").astype(str).str.strip()
         deliveries["match_id"] = deliveries.get("match_id", pd.Series(index=deliveries.index)).fillna("").astype(str).str.strip()
+        deliveries["match_gender"] = deliveries.get("match_gender", pd.Series(index=deliveries.index)).apply(
+            lambda x: normalize_gender_value(x, default="unknown")
+        )
+        unknown_gender = deliveries["match_gender"] == "unknown"
+        if unknown_gender.any() and match_gender_map:
+            mapped = deliveries["match_id"].map(match_gender_map).fillna("unknown")
+            deliveries.loc[unknown_gender, "match_gender"] = mapped[unknown_gender].apply(
+                lambda x: normalize_gender_value(x, default="unknown")
+            )
         deliveries["runs_off_bat"] = deliveries.get("runs_off_bat", 0).fillna(0).apply(safe_int)
         deliveries["extras"] = deliveries.get("extras", 0).fillna(0).apply(safe_int)
         deliveries["total_runs"] = deliveries["runs_off_bat"] + deliveries["extras"]
@@ -279,6 +356,8 @@ def transform_players() -> None:
     bowler_stats = pd.DataFrame(columns=["player_name", "matches_bowled", "wickets", "bowling_avg", "economy"])
     batsman_team_map = pd.DataFrame(columns=["player_name", "bat_team"])
     bowler_team_map = pd.DataFrame(columns=["player_name", "bowl_team"])
+    batsman_gender_map = pd.DataFrame(columns=["player_name", "bat_gender"])
+    bowler_gender_map = pd.DataFrame(columns=["player_name", "bowl_gender"])
 
     if not deliveries.empty:
         batsman_stats = (
@@ -381,6 +460,18 @@ def transform_players() -> None:
             .reset_index()
             .rename(columns={"bowler": "player_name", "bowling_team": "bowl_team"})
         )
+        batsman_gender_map = (
+            deliveries.groupby("striker")["match_gender"]
+            .agg(lambda s: normalize_gender_value(mode_or_unknown(s), default="unknown"))
+            .reset_index()
+            .rename(columns={"striker": "player_name", "match_gender": "bat_gender"})
+        )
+        bowler_gender_map = (
+            deliveries.groupby("bowler")["match_gender"]
+            .agg(lambda s: normalize_gender_value(mode_or_unknown(s), default="unknown"))
+            .reset_index()
+            .rename(columns={"bowler": "player_name", "match_gender": "bowl_gender"})
+        )
 
     player_pool = set()
     if not squads.empty:
@@ -395,6 +486,7 @@ def transform_players() -> None:
 
     squad_team = pd.DataFrame(columns=["player_name", "squad_team"])
     squad_role = pd.DataFrame(columns=["player_name", "squad_role"])
+    squad_gender = pd.DataFrame(columns=["player_name", "squad_gender"])
     if not squads.empty:
         squad_team = (
             squads.groupby("player_name")["team"]
@@ -408,13 +500,22 @@ def transform_players() -> None:
             .reset_index()
             .rename(columns={"role": "squad_role"})
         )
+        squad_gender = (
+            squads.groupby("player_name")["gender"]
+            .agg(lambda s: normalize_gender_value(mode_or_unknown(s), default="unknown"))
+            .reset_index()
+            .rename(columns={"gender": "squad_gender"})
+        )
 
     df = df.merge(squad_team, on="player_name", how="left")
     df = df.merge(squad_role, on="player_name", how="left")
+    df = df.merge(squad_gender, on="player_name", how="left")
     df = df.merge(batsman_stats, on="player_name", how="left")
     df = df.merge(bowler_stats, on="player_name", how="left")
     df = df.merge(batsman_team_map, on="player_name", how="left")
     df = df.merge(bowler_team_map, on="player_name", how="left")
+    df = df.merge(batsman_gender_map, on="player_name", how="left")
+    df = df.merge(bowler_gender_map, on="player_name", how="left")
 
     df["country"] = (
         df["squad_team"]
@@ -428,6 +529,17 @@ def transform_players() -> None:
         )
     )
     df["country"] = df["country"].replace("", "Unknown")
+    df["gender"] = (
+        df.get("squad_gender", pd.Series(index=df.index)).fillna("")
+        .where(df.get("squad_gender", pd.Series(index=df.index)).fillna("") != "", df.get("bat_gender", pd.Series(index=df.index)).fillna(""))
+        .where(
+            (
+                df.get("squad_gender", pd.Series(index=df.index)).fillna("") != ""
+            ) | (df.get("bat_gender", pd.Series(index=df.index)).fillna("") != ""),
+            df.get("bowl_gender", pd.Series(index=df.index)).fillna(""),
+        )
+    )
+    df["gender"] = df["gender"].apply(lambda x: normalize_gender_value(x, default="unknown"))
 
     for col in ["runs", "hundreds", "fifties", "wickets", "matches_batted", "matches_bowled"]:
         df[col] = df.get(col, 0).fillna(0).apply(safe_int)
@@ -467,6 +579,7 @@ def transform_players() -> None:
         "player_id",
         "player_name",
         "country",
+        "gender",
         "role",
         "matches",
         "runs",

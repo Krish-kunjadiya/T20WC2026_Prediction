@@ -15,10 +15,9 @@ from mlxtend.preprocessing import TransactionEncoder
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.model_selection import train_test_split
-from sqlalchemy import create_engine
 
 sys.path.append(os.path.dirname(__file__))
-from features import build_match_features  # noqa: E402
+from features import build_match_features, load_matches_and_deliveries, normalize_gender_value  # noqa: E402
 
 load_dotenv()
 
@@ -31,18 +30,25 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
+def _resolve_scope(gender: str | None) -> tuple[str, str]:
+    scope = normalize_gender_value(gender, default="all")
+    suffix = f"_{scope}" if scope in {"male", "female"} else ""
+    return scope, suffix
+
+
 # -- MODEL 4: ASSOCIATION RULES ---------------------------------------
-def train_association_rules():
+def train_association_rules(gender: str | None = None):
+    scope, suffix = _resolve_scope(gender)
     print("\n" + "=" * 55)
-    print("🔗 MODEL 4: Association Rules (Winning Conditions)")
+    print(f"🔗 MODEL 4: Association Rules (Winning Conditions) [{scope.upper()}]")
     print("=" * 55)
 
-    DATABASE_URL = (
-        f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}"
-        f"@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
+    matches, _ = load_matches_and_deliveries(
+        gender=scope if scope != "all" else None,
+        strict_gender=scope in {"male", "female"},
     )
-    engine = create_engine(DATABASE_URL)
-    matches = pd.read_sql("SELECT * FROM silver.clean_matches", engine)
+    if matches.empty:
+        raise ValueError(f"No matches available for association rules in scope '{scope}'")
 
     transactions = []
     for _, m in matches.iterrows():
@@ -59,6 +65,9 @@ def train_association_rules():
         won = m.get("winner") == m.get("team1")
         items.append("team1_won" if won else "team2_won")
         transactions.append(items)
+
+    if not transactions:
+        raise ValueError(f"No transactions generated for association rules in scope '{scope}'")
 
     te = TransactionEncoder()
     te_array = te.fit_transform(transactions)
@@ -86,20 +95,27 @@ def train_association_rules():
         con = ", ".join(list(r["consequents"]))
         print(f"     {ant} → {con} (conf={r['confidence']:.2f}, lift={r['lift']:.2f})")
 
-    with open(os.path.join(MODELS_DIR, "association_rules.pkl"), "wb") as f:
+    model_filename = f"association_rules{suffix}.pkl"
+    result_filename = f"association_rules{suffix}.csv"
+
+    with open(os.path.join(MODELS_DIR, model_filename), "wb") as f:
         pickle.dump({"rules": rules, "te": te}, f)
 
-    rules.to_csv(os.path.join(RESULTS_DIR, "association_rules.csv"), index=False)
-    print("  ✅ Saved → models/association_rules.pkl")
+    rules.to_csv(os.path.join(RESULTS_DIR, result_filename), index=False)
+    print(f"  ✅ Saved → models/{model_filename}")
+    print(f"  ✅ Saved → results/{result_filename}")
 
 
 # -- MODEL 5: UPSET DETECTION -----------------------------------------
-def train_upset_model():
+def train_upset_model(gender: str | None = None):
+    scope, suffix = _resolve_scope(gender)
     print("\n" + "=" * 55)
-    print("⚠️  MODEL 5: Upset Detection (Logistic Regression)")
+    print(f"⚠️  MODEL 5: Upset Detection (Logistic Regression) [{scope.upper()}]")
     print("=" * 55)
 
-    df = build_match_features()
+    df = build_match_features(gender=scope if scope != "all" else None, strict_gender=scope in {"male", "female"})
+    if df.empty:
+        raise ValueError(f"No feature rows available for upset model in scope '{scope}'")
 
     df["is_upset"] = ((df["win_rate_diff"] > 0.05) & (df["target"] == 0)).astype(int)
 
@@ -116,7 +132,11 @@ def train_upset_model():
     X = df[FEATURES].fillna(0)
     y = df["is_upset"]
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    if y.nunique() < 2:
+        raise ValueError(f"Not enough class diversity to train upset model for scope '{scope}'")
+
+    stratify_y = y if y.value_counts().min() >= 2 else None
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=stratify_y)
 
     model = LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42)
     model.fit(X_train, y_train)
@@ -133,7 +153,8 @@ def train_upset_model():
     print(f"     ROC-AUC: {roc}")
     print(f"\n{classification_report(y_test, y_pred, zero_division=0)}")
 
-    with open(os.path.join(MODELS_DIR, "upset_detector_lr.pkl"), "wb") as f:
+    model_filename = f"upset_detector_lr{suffix}.pkl"
+    with open(os.path.join(MODELS_DIR, model_filename), "wb") as f:
         pickle.dump({"model": model, "features": FEATURES}, f)
 
     metrics_path = os.path.join(RESULTS_DIR, "metrics.json")
@@ -142,13 +163,15 @@ def train_upset_model():
             m = json.load(f)
     except Exception:
         m = {}
-    m["upset_detection"] = {"roc_auc": str(roc)}
+    metric_key = "upset_detection" if scope == "all" else f"upset_detection_{scope}"
+    m[metric_key] = {"roc_auc": str(roc), "scope": scope}
     with open(metrics_path, "w") as f:
         json.dump(m, f, indent=2)
 
-    print("  ✅ Saved → models/upset_detector_lr.pkl")
+    print(f"  ✅ Saved → models/{model_filename}")
 
 
 if __name__ == "__main__":
-    train_association_rules()
-    train_upset_model()
+    for model_scope in ["male", "female", None]:
+        train_association_rules(model_scope)
+        train_upset_model(model_scope)

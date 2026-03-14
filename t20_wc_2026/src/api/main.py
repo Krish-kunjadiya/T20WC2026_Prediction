@@ -6,6 +6,7 @@ import json
 import os
 import pickle
 import time
+from contextvars import ContextVar
 from typing import Any, Callable
 
 import pandas as pd
@@ -31,6 +32,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def request_gender_middleware(request, call_next):
+    """Store request gender selector in context for downstream data/model filtering."""
+    token = _REQUEST_GENDER.set(
+        normalize_gender_value(request.query_params.get("gender"), default=normalize_gender_value(DEFAULT_GENDER, "male"))
+    )
+    try:
+        return await call_next(request)
+    finally:
+        _REQUEST_GENDER.reset(token)
+
 DATABASE_URL = (
     f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}"
     f"@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
@@ -47,6 +60,62 @@ _DATA_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _DATA_CACHE_TTL_SECONDS = int(os.getenv("API_DATA_CACHE_TTL_SECONDS", "120"))
 _RESPONSE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _RESPONSE_CACHE_TTL_SECONDS = int(os.getenv("API_RESPONSE_CACHE_TTL_SECONDS", "180"))
+DEFAULT_GENDER = os.getenv("DEFAULT_GENDER", "male")
+_REQUEST_GENDER: ContextVar[str] = ContextVar("request_gender", default=DEFAULT_GENDER)
+
+
+def normalize_gender_value(value: str | None, default: str = "all") -> str:
+    """Normalize user-provided gender token to male/female/all."""
+    raw = str(value or "").strip().lower()
+    if raw in {"male", "men", "man", "m", "boys"}:
+        return "male"
+    if raw in {"female", "women", "woman", "f", "girls"}:
+        return "female"
+    if raw in {"all", "both", "mixed", "any", ""}:
+        return default
+    return default
+
+
+def infer_gender_from_text(*texts: str) -> str:
+    """Best-effort gender inference from free text (event/team labels)."""
+    blob = " ".join(str(t or "") for t in texts).lower()
+    if any(token in blob for token in ["women", "female", "girls"]):
+        return "female"
+    if any(token in blob for token in ["men", "male", "boys"]):
+        return "male"
+    return "unknown"
+
+
+def get_request_gender() -> str:
+    """Resolve request-scoped gender from middleware context."""
+    return normalize_gender_value(_REQUEST_GENDER.get(), default=normalize_gender_value(DEFAULT_GENDER, "male"))
+
+
+def _suffix_filename_with_gender(filename: str, gender: str) -> str:
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}_{gender}{ext}"
+
+
+def load_model_for_gender(filename: str, gender: str) -> Any:
+    """Load gender-specific model if present, fallback to generic model."""
+    g = normalize_gender_value(gender, default="all")
+    if g in {"male", "female"}:
+        gender_file = _suffix_filename_with_gender(filename, g)
+        model = load_model(gender_file)
+        if model is not None:
+            return model
+    return load_model(filename)
+
+
+def read_csv_for_gender(filename: str, gender: str) -> pd.DataFrame:
+    """Read gender-specific result CSV if present, fallback to generic CSV."""
+    g = normalize_gender_value(gender, default="all")
+    if g in {"male", "female"}:
+        gender_path = os.path.join(RESULTS_DIR, _suffix_filename_with_gender(filename, g))
+        frame = read_csv_if_exists(gender_path)
+        if not frame.empty:
+            return frame
+    return read_csv_if_exists(os.path.join(RESULTS_DIR, filename))
 
 
 def load_model(filename: str) -> Any:
@@ -180,13 +249,51 @@ def _normalize_matches_frame(matches: pd.DataFrame) -> pd.DataFrame:
     matches["win_by_runs"] = as_numeric(matches.get("win_by_runs", pd.Series(index=matches.index)), 0).astype(int)
     matches["win_by_wickets"] = as_numeric(matches.get("win_by_wickets", pd.Series(index=matches.index)), 0).astype(int)
     matches["match_date"] = pd.to_datetime(matches.get("match_date"), errors="coerce")
+
+    gender_raw = matches.get("gender", pd.Series(["unknown"] * len(matches), index=matches.index))
+    matches["gender"] = gender_raw.fillna("").astype(str).str.strip().str.lower()
+    matches["gender"] = matches["gender"].apply(lambda g: normalize_gender_value(g, default="unknown"))
+
+    unknown_mask = matches["gender"] == "unknown"
+    if unknown_mask.any():
+        inferred = matches.apply(
+            lambda row: infer_gender_from_text(
+                row.get("stage", ""),
+                row.get("tournament_phase", ""),
+                row.get("team1", ""),
+                row.get("team2", ""),
+            ),
+            axis=1,
+        )
+        matches.loc[unknown_mask & inferred.isin(["male", "female"]), "gender"] = inferred[unknown_mask & inferred.isin(["male", "female"])]
+
     return matches
 
 
-def load_matches_frame() -> pd.DataFrame:
+def _filter_matches_by_gender(matches: pd.DataFrame, gender: str | None = None) -> pd.DataFrame:
+    """Filter matches by normalized gender, fallback safely when tags are unavailable."""
+    if matches.empty:
+        return matches
+
+    resolved_gender = normalize_gender_value(gender or get_request_gender(), default="all")
+    if resolved_gender not in {"male", "female"}:
+        return matches
+
+    if "gender" not in matches.columns:
+        return matches
+
+    valid_values = set(matches["gender"].dropna().astype(str).unique().tolist())
+    if not ({"male", "female"} & valid_values):
+        return matches
+
+    return matches[matches["gender"] == resolved_gender].copy()
+
+
+def load_matches_frame(gender: str | None = None) -> pd.DataFrame:
     """Load and normalize clean matches table using in-memory cache."""
     frame = _get_cached_frame("clean_matches", "SELECT * FROM silver.clean_matches", _normalize_matches_frame)
-    return frame.copy(deep=False)
+    filtered = _filter_matches_by_gender(frame, gender)
+    return filtered.copy(deep=False)
 
 
 def _normalize_deliveries_frame(deliveries: pd.DataFrame) -> pd.DataFrame:
@@ -205,13 +312,32 @@ def _normalize_deliveries_frame(deliveries: pd.DataFrame) -> pd.DataFrame:
     deliveries["batsman_runs"] = as_numeric(deliveries.get("batsman_runs", pd.Series(index=deliveries.index)), 0)
     deliveries["total_runs"] = as_numeric(deliveries.get("total_runs", pd.Series(index=deliveries.index)), 0)
     deliveries["is_wicket_int"] = as_bool_int(deliveries.get("is_wicket", pd.Series(index=deliveries.index)))
+    if "gender" in deliveries.columns:
+        deliveries["gender"] = deliveries["gender"].fillna("").astype(str).str.strip().str.lower()
+        deliveries["gender"] = deliveries["gender"].apply(lambda g: normalize_gender_value(g, default="unknown"))
     return deliveries
 
 
-def load_deliveries_frame() -> pd.DataFrame:
+def load_deliveries_frame(gender: str | None = None, matches: pd.DataFrame | None = None) -> pd.DataFrame:
     """Load and normalize clean deliveries table using in-memory cache."""
     frame = _get_cached_frame("clean_deliveries", "SELECT * FROM silver.clean_deliveries", _normalize_deliveries_frame)
-    return frame.copy(deep=False)
+
+    resolved_gender = normalize_gender_value(gender or get_request_gender(), default="all")
+    if resolved_gender not in {"male", "female"}:
+        return frame.copy(deep=False)
+
+    if "gender" in frame.columns:
+        valid_values = set(frame["gender"].dropna().astype(str).unique().tolist())
+        if {"male", "female"} & valid_values:
+            return frame[frame["gender"] == resolved_gender].copy(deep=False)
+
+    if matches is None:
+        matches = load_matches_frame(resolved_gender)
+    if matches.empty:
+        return frame.iloc[0:0].copy()
+
+    allowed_match_ids = set(matches["match_id"].astype(str).tolist())
+    return frame[frame["match_id"].astype(str).isin(allowed_match_ids)].copy(deep=False)
 
 
 def _normalize_players_frame(players: pd.DataFrame) -> pd.DataFrame:
@@ -222,16 +348,39 @@ def _normalize_players_frame(players: pd.DataFrame) -> pd.DataFrame:
     players["player_name"] = players["player_name"].fillna("").astype(str)
     players["country"] = players["country"].fillna("").astype(str)
     players["role"] = players.get("role", "Unknown").fillna("Unknown").astype(str)
+    if "gender" in players.columns:
+        players["gender"] = players["gender"].fillna("").astype(str).str.strip().str.lower()
+        players["gender"] = players["gender"].apply(lambda g: normalize_gender_value(g, default="unknown"))
 
     for col in ["runs", "batting_avg", "strike_rate", "wickets", "bowling_avg", "economy", "matches"]:
         players[col] = as_numeric(players.get(col, pd.Series(index=players.index)), 0)
     return players
 
 
-def load_players_frame() -> pd.DataFrame:
+def load_players_frame(gender: str | None = None, matches: pd.DataFrame | None = None, deliveries: pd.DataFrame | None = None) -> pd.DataFrame:
     """Load and normalize clean players table using in-memory cache."""
     frame = _get_cached_frame("clean_players", "SELECT * FROM silver.clean_players", _normalize_players_frame)
-    return frame.copy(deep=False)
+
+    resolved_gender = normalize_gender_value(gender or get_request_gender(), default="all")
+    if resolved_gender not in {"male", "female"}:
+        return frame.copy(deep=False)
+
+    if "gender" in frame.columns:
+        valid_values = set(frame["gender"].dropna().astype(str).unique().tolist())
+        if {"male", "female"} & valid_values:
+            return frame[frame["gender"] == resolved_gender].copy(deep=False)
+
+    # Fallback for legacy tables without gender: infer from participation in filtered matches.
+    if deliveries is None:
+        if matches is None:
+            matches = load_matches_frame(resolved_gender)
+        deliveries = load_deliveries_frame(resolved_gender, matches=matches)
+
+    if deliveries.empty:
+        return frame.iloc[0:0].copy()
+
+    participants = set(deliveries["batsman"].dropna().astype(str)) | set(deliveries["bowler"].dropna().astype(str))
+    return frame[frame["player_name"].astype(str).isin(participants)].copy(deep=False)
 
 
 def filter_matches_by_venue(matches: pd.DataFrame, venue: str | None) -> pd.DataFrame:
@@ -526,9 +675,10 @@ def compute_upset_probability(
     toss_winner: str,
     toss_bat_first: int,
     is_knockout: int,
+    gender: str | None = None,
 ) -> float:
     """Compute upset probability with model if available, heuristic fallback otherwise."""
-    artifact = load_model("upset_detector_lr.pkl")
+    artifact = load_model_for_gender("upset_detector_lr.pkl", gender or get_request_gender())
 
     wr_fav = team_win_rate(matches, favourite_team)
     wr_und = team_win_rate(matches, underdog_team)
@@ -819,6 +969,7 @@ class MatchRequest(BaseModel):
     toss_decision: str = "bat"
     is_knockout: int = 0
     venue: str = "Neutral Venue"
+    gender: str | None = None
 
 
 class ScoreRequest(BaseModel):
@@ -853,6 +1004,7 @@ class UpsetRequest(BaseModel):
     toss_winner: str
     toss_bat_first: int = 1
     is_knockout: int = 0
+    gender: str | None = None
 
 
 class AnalystWinRequest(BaseModel):
@@ -862,6 +1014,7 @@ class AnalystWinRequest(BaseModel):
     toss_decision: str = "bat"
     venue: str = "Neutral Venue"
     is_knockout: int = 0
+    gender: str | None = None
 
 
 def build_match_prediction_payload(
@@ -873,6 +1026,7 @@ def build_match_prediction_payload(
     toss_decision: str = "bat",
     is_knockout: int = 0,
     venue: str = "Neutral Venue",
+    gender: str | None = None,
 ) -> dict[str, Any]:
     """Build a calibrated match prediction payload from preloaded dataframes."""
     context_prob = compute_contextual_win_probability(
@@ -885,7 +1039,7 @@ def build_match_prediction_payload(
         venue=venue,
     )
 
-    artifact = load_model("match_outcome_xgb.pkl")
+    artifact = load_model_for_gender("match_outcome_xgb.pkl", gender or get_request_gender())
     model_prob_a = None
 
     if artifact and isinstance(artifact, dict) and "model" in artifact and "features" in artifact:
@@ -973,8 +1127,9 @@ def refresh_runtime_caches() -> dict[str, Any]:
 
 @app.post("/predict/match")
 def predict_match(req: MatchRequest) -> dict[str, Any]:
-    matches = load_matches_frame()
-    deliveries = load_deliveries_frame()
+    selected_gender = normalize_gender_value(req.gender or get_request_gender(), default=normalize_gender_value(DEFAULT_GENDER, "male"))
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
 
     return build_match_prediction_payload(
         matches=matches,
@@ -985,17 +1140,19 @@ def predict_match(req: MatchRequest) -> dict[str, Any]:
         toss_decision=req.toss_decision,
         is_knockout=req.is_knockout,
         venue=req.venue,
+        gender=selected_gender,
     )
 
 
 @app.post("/predict/score")
-def predict_score(req: ScoreRequest) -> dict[str, Any]:
+def predict_score(req: ScoreRequest, gender: str | None = None) -> dict[str, Any]:
     if req.sixes + req.fours > req.total_balls:
         raise HTTPException(status_code=422, detail="Sixes + fours cannot exceed total balls")
     if req.pp_runs > req.total_balls * 2:
         raise HTTPException(status_code=422, detail="Powerplay runs are unrealistically high for the entered state")
 
-    artifact = load_model("score_predictor_lgbm.pkl")
+    selected_gender = normalize_gender_value(gender or get_request_gender(), default=normalize_gender_value(DEFAULT_GENDER, "male"))
+    artifact = load_model_for_gender("score_predictor_lgbm.pkl", selected_gender)
     if not artifact:
         raise HTTPException(status_code=500, detail="Score model not found")
 
@@ -1009,7 +1166,8 @@ def predict_score(req: ScoreRequest) -> dict[str, Any]:
     X = pd.DataFrame([payload]).reindex(columns=feat_cols, fill_value=0)
     model_pred = float(model.predict(X)[0])
 
-    deliveries = load_deliveries_frame()
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
     innings = build_first_innings_dataset(deliveries)
 
     historical_pred = None
@@ -1050,16 +1208,34 @@ def predict_score(req: ScoreRequest) -> dict[str, Any]:
 
 @app.get("/teams")
 def get_teams() -> dict[str, list[str]]:
-    teams = pd.read_sql("SELECT DISTINCT team_name FROM gold.dim_team ORDER BY team_name", engine)
-    return {"teams": teams["team_name"].dropna().astype(str).tolist()}
+    matches = load_matches_frame(get_request_gender())
+    team_values = pd.concat(
+        [
+            matches.get("team1", pd.Series(dtype=object)),
+            matches.get("team2", pd.Series(dtype=object)),
+        ],
+        ignore_index=True,
+    )
+    teams = sorted({str(t).strip() for t in team_values.dropna().astype(str).tolist() if str(t).strip()})
+    return {"teams": teams}
 
 
 @app.get("/venues")
 def get_venues() -> dict[str, list[str]]:
-    venues = pd.read_sql(
-        "SELECT DISTINCT stadium_name, city FROM silver.clean_venues ORDER BY stadium_name, city",
-        engine,
-    )
+    matches = load_matches_frame(get_request_gender())
+
+    if {"venue", "city"}.issubset(matches.columns):
+        venues = (
+            matches[["venue", "city"]]
+            .rename(columns={"venue": "stadium_name"})
+            .drop_duplicates(ignore_index=True)
+        )
+    else:
+        venues = pd.read_sql(
+            "SELECT DISTINCT stadium_name, city FROM silver.clean_venues ORDER BY stadium_name, city",
+            engine,
+        )
+
     venue_list: list[str] = []
     for _, row in venues.iterrows():
         stadium = str(row.get("stadium_name") or "").strip()
@@ -1075,17 +1251,27 @@ def get_venues() -> dict[str, list[str]]:
 
 @app.get("/players/{country}")
 def get_players(country: str) -> dict[str, Any]:
-    sql = text(
-        """
-        SELECT player_name, role, runs, batting_avg, strike_rate, wickets, economy
-        FROM silver.clean_players
-        WHERE country = :country
-        ORDER BY runs DESC
-        LIMIT 20
-        """
-    )
-    with engine.connect() as conn:
-        frame = pd.read_sql(sql, conn, params={"country": country})
+    selected_gender = get_request_gender()
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
+    players = load_players_frame(selected_gender, matches=matches, deliveries=deliveries)
+
+    if players.empty:
+        frame = pd.DataFrame(columns=["player_name", "role", "runs", "batting_avg", "strike_rate", "wickets", "economy"])
+    else:
+        frame = players.copy()
+        frame["country"] = frame.get("country", pd.Series(dtype=object)).astype(str)
+        frame = frame[frame["country"].str.lower() == country.strip().lower()].copy()
+        if "runs" in frame.columns:
+            frame["runs"] = as_numeric(frame["runs"], default=0)
+            frame = frame.sort_values("runs", ascending=False)
+        frame = frame.head(20)
+
+    required_cols = ["player_name", "role", "runs", "batting_avg", "strike_rate", "wickets", "economy"]
+    for col in required_cols:
+        if col not in frame.columns:
+            frame[col] = pd.NA
+
     return {"players": frame.to_dict(orient="records")}
 
 
@@ -1199,12 +1385,14 @@ def chat_preview_endpoint(req: MatchPreviewRequest) -> dict[str, str]:
 
 @app.get("/dashboard/kpis")
 def get_dashboard_kpis() -> dict[str, Any]:
-    cached = get_cached_response("dashboard_kpis")
+    selected_gender = get_request_gender()
+    cache_key = f"dashboard_kpis::{selected_gender}"
+    cached = get_cached_response(cache_key)
     if cached is not None:
         return cached
 
-    matches = load_matches_frame()
-    deliveries = load_deliveries_frame()
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
 
     total_matches = int(len(matches))
     teams = sorted(set(matches["team1"].tolist() + matches["team2"].tolist())) if not matches.empty else []
@@ -1225,18 +1413,20 @@ def get_dashboard_kpis() -> dict[str, Any]:
         "avg_first_innings_score": avg_first_score,
         "chasing_win_pct": round(float(chase_win), 1),
     }
-    return set_cached_response("dashboard_kpis", payload)
+    return set_cached_response(cache_key, payload)
 
 
 @app.get("/dashboard/charts")
 def get_dashboard_charts() -> dict[str, Any]:
-    cached = get_cached_response("dashboard_charts")
+    selected_gender = get_request_gender()
+    cache_key = f"dashboard_charts::{selected_gender}"
+    cached = get_cached_response(cache_key)
     if cached is not None:
         return cached
 
-    matches = load_matches_frame()
-    deliveries = load_deliveries_frame()
-    players = load_players_frame()
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
+    players = load_players_frame(selected_gender, matches=matches, deliveries=deliveries)
 
     evolution_data: list[dict[str, Any]] = []
     if not matches.empty and not deliveries.empty:
@@ -1426,20 +1616,23 @@ def get_dashboard_charts() -> dict[str, Any]:
         "deathBowlingLeadersData": death_bowling_leaders_data,
         "playerArchetypesData": player_archetypes_data,
     }
-    return set_cached_response("dashboard_charts", payload)
+    return set_cached_response(cache_key, payload)
 
 
 @app.get("/dashboard/summary")
 def get_dashboard_summary() -> dict[str, Any]:
-    cached = get_cached_response("dashboard_summary")
+    selected_gender = get_request_gender()
+    cache_key = f"dashboard_summary::{selected_gender}"
+    cached = get_cached_response(cache_key)
     if cached is not None:
         return cached
 
     payload = {
         "kpis": get_dashboard_kpis(),
         "charts": get_dashboard_charts(),
+        "gender": selected_gender,
     }
-    return set_cached_response("dashboard_summary", payload)
+    return set_cached_response(cache_key, payload)
 
 
 @app.on_event("startup")
@@ -1448,11 +1641,16 @@ def prewarm_dashboard_summary_cache() -> None:
     if os.getenv("API_PREWARM_DASHBOARD", "1") != "1":
         return
 
+    token = _REQUEST_GENDER.set("male")
     try:
-        get_dashboard_summary()
+        for g in ["male", "female"]:
+            _REQUEST_GENDER.set(g)
+            get_dashboard_summary()
     except Exception:
         # Do not block API startup if prewarm fails.
         pass
+    finally:
+        _REQUEST_GENDER.reset(token)
 
 
 @app.get("/commentator/meta")
@@ -1735,8 +1933,9 @@ def analyst_meta() -> dict[str, Any]:
 
 @app.post("/analyst/win-probability")
 def analyst_win_probability(req: AnalystWinRequest) -> dict[str, Any]:
-    matches = load_matches_frame()
-    deliveries = load_deliveries_frame()
+    selected_gender = normalize_gender_value(req.gender or get_request_gender(), default=normalize_gender_value(DEFAULT_GENDER, "male"))
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
     model_payload = build_match_prediction_payload(
         matches=matches,
         deliveries=deliveries,
@@ -1746,6 +1945,7 @@ def analyst_win_probability(req: AnalystWinRequest) -> dict[str, Any]:
         toss_decision=req.toss_decision,
         is_knockout=req.is_knockout,
         venue=req.venue,
+        gender=selected_gender,
     )
     return build_analyst_win_probability_payload(model_payload)
 
@@ -1948,8 +2148,9 @@ def analyst_insights(
 
 @app.post("/predict/upset")
 def predict_upset(req: UpsetRequest) -> dict[str, Any]:
-    matches = load_matches_frame()
-    deliveries = load_deliveries_frame()
+    selected_gender = normalize_gender_value(req.gender or get_request_gender(), default=normalize_gender_value(DEFAULT_GENDER, "male"))
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
 
     upset_prob = compute_upset_probability(
         matches=matches,
@@ -1959,6 +2160,7 @@ def predict_upset(req: UpsetRequest) -> dict[str, Any]:
         toss_winner=req.toss_winner,
         toss_bat_first=req.toss_bat_first,
         is_knockout=req.is_knockout,
+        gender=selected_gender,
     )
 
     return {
@@ -1971,8 +2173,7 @@ def predict_upset(req: UpsetRequest) -> dict[str, Any]:
 
 @app.get("/ml/player-clusters")
 def get_player_clusters() -> dict[str, Any]:
-    path = os.path.join(RESULTS_DIR, "player_clusters.csv")
-    frame = read_csv_if_exists(path)
+    frame = read_csv_for_gender("player_clusters.csv", get_request_gender())
     if frame.empty:
         return {"available": False, "clusters": [], "topByType": {}}
 
@@ -2006,8 +2207,7 @@ def get_player_clusters() -> dict[str, Any]:
 
 @app.get("/ml/association-rules")
 def get_association_rules() -> dict[str, Any]:
-    path = os.path.join(RESULTS_DIR, "association_rules.csv")
-    frame = read_csv_if_exists(path)
+    frame = read_csv_for_gender("association_rules.csv", get_request_gender())
     if frame.empty:
         return {"available": False, "rules": []}
 
@@ -2032,11 +2232,23 @@ def get_association_rules() -> dict[str, Any]:
 
 @app.get("/optimization/teams")
 def get_optimization_teams() -> dict[str, list[str]]:
-    teams = pd.read_sql(
-        "SELECT DISTINCT country FROM silver.clean_players WHERE country IS NOT NULL ORDER BY country",
-        engine,
-    )
-    team_list = [t for t in teams["country"].astype(str).tolist() if t and t.lower() != "nan"]
+    selected_gender = get_request_gender()
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
+    players = load_players_frame(selected_gender, matches=matches, deliveries=deliveries)
+
+    if "country" in players.columns and not players.empty:
+        team_list = sorted({str(t).strip() for t in players["country"].dropna().astype(str).tolist() if str(t).strip()})
+    else:
+        team_values = pd.concat(
+            [
+                matches.get("team1", pd.Series(dtype=object)),
+                matches.get("team2", pd.Series(dtype=object)),
+            ],
+            ignore_index=True,
+        )
+        team_list = sorted({str(t).strip() for t in team_values.dropna().astype(str).tolist() if str(t).strip()})
+
     return {"teams": ["All Teams"] + team_list}
 
 
@@ -2049,7 +2261,8 @@ def optimization_optimal_xi(country: str = "All Teams") -> dict[str, Any]:
             from src.ml.optimizer import select_optimal_xi
 
         selected_country = None if country == "All Teams" else country
-        xi = select_optimal_xi(selected_country)
+        selected_gender = get_request_gender()
+        xi = select_optimal_xi(selected_country, gender=selected_gender)
         if "role" in xi.columns:
             role_dist = xi["role"].value_counts().reset_index()
             role_dist.columns = ["role", "count"]
@@ -2073,7 +2286,8 @@ def optimization_batting_order(country: str = "All Teams") -> dict[str, Any]:
             from src.ml.optimizer import optimize_batting_order
 
         selected_country = None if country == "All Teams" else country
-        order_df = optimize_batting_order(selected_country)
+        selected_gender = get_request_gender()
+        order_df = optimize_batting_order(selected_country, gender=selected_gender)
         return {"battingOrder": order_df.to_dict(orient="records")}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -2081,8 +2295,7 @@ def optimization_batting_order(country: str = "All Teams") -> dict[str, Any]:
 
 @app.get("/optimization/shap")
 def optimization_get_shap() -> dict[str, Any]:
-    path = os.path.join(RESULTS_DIR, "shap_importance.csv")
-    frame = read_csv_if_exists(path)
+    frame = read_csv_for_gender("shap_importance.csv", get_request_gender())
     if frame.empty:
         return {"available": False, "shap": []}
 
@@ -2098,7 +2311,7 @@ def optimization_compute_shap() -> dict[str, Any]:
         except Exception:
             from src.ml.optimizer import compute_shap_importance
 
-        shap_df = compute_shap_importance()
+        shap_df = compute_shap_importance(get_request_gender())
         if shap_df.empty:
             raise HTTPException(status_code=500, detail="SHAP computation returned no data")
         return {"available": True, "shap": shap_df.to_dict(orient="records")}

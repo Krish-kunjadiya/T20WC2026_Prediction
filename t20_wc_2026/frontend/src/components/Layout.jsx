@@ -1,8 +1,11 @@
 import React from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { Database, Home, User, BarChart2, Mic, BrainCircuit, MessageSquare, Settings } from 'lucide-react';
+import { useGender } from '../context/GenderContext';
 
 const Layout = () => {
+  const { gender, setGender } = useGender();
+
   const navItems = [
     { name: 'Dashboard', path: '/', icon: Home },
     { name: 'Coach', path: '/coach', icon: User },
@@ -44,12 +47,39 @@ const Layout = () => {
             );
           })}
         </nav>
+
+        <div className="border-t border-gray-200 p-4">
+          <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Tournament Dataset</p>
+          <div className="grid grid-cols-2 gap-2 bg-gray-100 rounded-lg p-1">
+            <button
+              type="button"
+              onClick={() => setGender('male')}
+              className={`rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
+                gender === 'male' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-white'
+              }`}
+            >
+              Male
+            </button>
+            <button
+              type="button"
+              onClick={() => setGender('female')}
+              className={`rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
+                gender === 'female' ? 'bg-pink-600 text-white shadow-sm' : 'text-gray-600 hover:bg-white'
+              }`}
+            >
+              Female
+            </button>
+          </div>
+          <p className="mt-2 text-[11px] leading-4 text-gray-500">
+            All insights and predictions use the selected tournament stream.
+          </p>
+        </div>
       </aside>
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col overflow-hidden">
         <div className="flex-1 overflow-y-auto p-8">
-          <Outlet />
+          <Outlet key={gender} />
         </div>
       </main>
     </div>

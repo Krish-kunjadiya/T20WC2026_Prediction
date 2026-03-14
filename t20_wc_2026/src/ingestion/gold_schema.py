@@ -56,6 +56,7 @@ def create_gold_layer() -> None:
                 player_id           VARCHAR(100) PRIMARY KEY,
                 player_name         VARCHAR(100) NOT NULL,
                 country             VARCHAR(60),
+                gender              VARCHAR(10),
                 role                VARCHAR(40),
                 batting_style       VARCHAR(30),
                 bowling_style       VARCHAR(50),
@@ -85,6 +86,7 @@ def create_gold_layer() -> None:
                 match_id            VARCHAR(50) PRIMARY KEY,
                 toss_winner_id      INTEGER REFERENCES gold.dim_team(team_id),
                 toss_decision       VARCHAR(10),
+                match_gender        VARCHAR(10),
                 weather_condition   VARCHAR(30),
                 is_day_night        BOOLEAN DEFAULT FALSE,
                 result_type         VARCHAR(20),
@@ -97,6 +99,7 @@ def create_gold_layer() -> None:
             CREATE TABLE IF NOT EXISTS gold.fact_match_performance (
                 perf_id             SERIAL PRIMARY KEY,
                 match_id            VARCHAR(50) REFERENCES gold.dim_match(match_id),
+                match_gender        VARCHAR(10),
                 player_id           VARCHAR(100) REFERENCES gold.dim_player(player_id),
                 team_id             INTEGER REFERENCES gold.dim_team(team_id),
                 opponent_team_id    INTEGER REFERENCES gold.dim_team(team_id),

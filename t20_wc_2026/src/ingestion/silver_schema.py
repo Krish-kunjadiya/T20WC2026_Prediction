@@ -31,12 +31,13 @@ def create_silver_layer() -> None:
                 city                VARCHAR(60),
                 team1               VARCHAR(60),
                 team2               VARCHAR(60),
+                gender              VARCHAR(10),
                 toss_winner         VARCHAR(60),
                 toss_decision       VARCHAR(10),
                 winner              VARCHAR(60),
-                win_margin          INTEGER DEFAULT 0,
-                win_type            VARCHAR(10),
-                stage               VARCHAR(30),
+                win_by_runs         INTEGER DEFAULT 0,
+                win_by_wickets      INTEGER DEFAULT 0,
+                player_of_match     VARCHAR(100),
                 tournament_phase    VARCHAR(20),
                 is_day_night        BOOLEAN DEFAULT FALSE,
                 _processed_at       TIMESTAMP DEFAULT NOW()
@@ -48,22 +49,19 @@ def create_silver_layer() -> None:
             CREATE TABLE IF NOT EXISTS silver.clean_deliveries (
                 delivery_id         SERIAL PRIMARY KEY,
                 match_id            VARCHAR(50),
-                innings             INTEGER,
+                inning              INTEGER,
                 over_num            INTEGER,
                 ball_num            INTEGER,
                 batting_team        VARCHAR(60),
                 bowling_team        VARCHAR(60),
-                striker             VARCHAR(60),
-                non_striker         VARCHAR(60),
+                batsman             VARCHAR(60),
                 bowler              VARCHAR(60),
-                runs_off_bat        INTEGER DEFAULT 0,
-                extras              INTEGER DEFAULT 0,
+                batsman_runs        INTEGER DEFAULT 0,
+                extra_runs          INTEGER DEFAULT 0,
                 total_runs          INTEGER DEFAULT 0,
-                is_wide             BOOLEAN DEFAULT FALSE,
-                is_noball           BOOLEAN DEFAULT FALSE,
                 is_wicket           BOOLEAN DEFAULT FALSE,
-                wicket_type         VARCHAR(30),
-                player_dismissed    VARCHAR(60),
+                dismissal_kind      VARCHAR(30),
+                gender              VARCHAR(10),
                 _processed_at       TIMESTAMP DEFAULT NOW()
             );
         """))
@@ -71,11 +69,12 @@ def create_silver_layer() -> None:
         # ── clean_players ─────────────────────────────────────────────────
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS silver.clean_players (
+                player_id           VARCHAR(100),
                 player_name         VARCHAR(100),
-                team                VARCHAR(60),
+                country             VARCHAR(60),
+                gender              VARCHAR(10),
                 role                VARCHAR(40),
                 matches             INTEGER DEFAULT 0,
-                innings             INTEGER DEFAULT 0,
                 runs                INTEGER DEFAULT 0,
                 batting_avg         FLOAT DEFAULT 0.0,
                 strike_rate         FLOAT DEFAULT 0.0,
@@ -84,9 +83,8 @@ def create_silver_layer() -> None:
                 wickets             INTEGER DEFAULT 0,
                 bowling_avg         FLOAT DEFAULT 0.0,
                 economy             FLOAT DEFAULT 0.0,
-                overs_bowled        FLOAT DEFAULT 0.0,
                 _processed_at       TIMESTAMP DEFAULT NOW(),
-                PRIMARY KEY (player_name, team)
+                PRIMARY KEY (player_name, country)
             );
         """))
 

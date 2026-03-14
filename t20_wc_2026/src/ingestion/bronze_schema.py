@@ -34,6 +34,7 @@ def create_bronze_layer() -> None:
                 city                VARCHAR(60),
                 team1               VARCHAR(60),
                 team2               VARCHAR(60),
+                gender              VARCHAR(10),
                 toss_winner         VARCHAR(60),
                 toss_decision       VARCHAR(10),
                 winner              VARCHAR(60),
@@ -85,6 +86,7 @@ def create_bronze_layer() -> None:
             CREATE TABLE IF NOT EXISTS bronze.raw_squads (
                 team                VARCHAR(60),
                 player_name         VARCHAR(100),
+                gender              VARCHAR(10),
                 role                VARCHAR(40),
                 designation         VARCHAR(40),
                 _ingested_at        TIMESTAMP DEFAULT NOW()
@@ -127,6 +129,7 @@ def create_bronze_layer() -> None:
                 season                  VARCHAR(10),
                 start_date              VARCHAR(20),
                 venue                   VARCHAR(120),
+                match_gender            VARCHAR(10),
                 innings                 VARCHAR(5),
                 ball                    VARCHAR(10),
                 batting_team            VARCHAR(60),
@@ -148,6 +151,11 @@ def create_bronze_layer() -> None:
                 _ingested_at            TIMESTAMP DEFAULT NOW()
             );
         """))
+
+        # Backward-compatible schema evolution for already-created tables.
+        conn.execute(text("ALTER TABLE bronze.raw_matches ADD COLUMN IF NOT EXISTS gender VARCHAR(10);"))
+        conn.execute(text("ALTER TABLE bronze.raw_squads ADD COLUMN IF NOT EXISTS gender VARCHAR(10);"))
+        conn.execute(text("ALTER TABLE bronze.raw_deliveries ADD COLUMN IF NOT EXISTS match_gender VARCHAR(10);"))
 
         conn.commit()
         print("✅ BRONZE layer created — 7 tables ready")

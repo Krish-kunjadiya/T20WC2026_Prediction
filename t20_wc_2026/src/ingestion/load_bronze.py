@@ -39,6 +39,16 @@ def _safe_str(value: str | None) -> str:
     return str(value).strip()
 
 
+def _normalize_gender(value: str | None) -> str:
+    """Normalize gender labels to male/female/unknown."""
+    raw = _safe_str(value).lower()
+    if raw in {"male", "men", "man", "m", "boys"}:
+        return "male"
+    if raw in {"female", "women", "woman", "f", "girls"}:
+        return "female"
+    return "unknown"
+
+
 def _parse_info_file(info_path: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
     """Parse Cricsheet info CSV into match metadata and player tuples."""
     meta: dict[str, str] = {}
@@ -59,6 +69,7 @@ def _parse_info_file(info_path: Path) -> tuple[dict[str, str], list[tuple[str, s
             elif key in {
                 "date",
                 "event",
+                "gender",
                 "venue",
                 "city",
                 "toss_winner",
@@ -92,6 +103,7 @@ def _build_match_row(match_id: str, meta: dict[str, str]) -> dict[str, str]:
         "city": _safe_str(meta.get("city"))[:60],
         "team1": _safe_str(meta.get("team1"))[:60],
         "team2": _safe_str(meta.get("team2"))[:60],
+        "gender": _normalize_gender(meta.get("gender"))[:10],
         "toss_winner": _safe_str(meta.get("toss_winner"))[:60],
         "toss_decision": _safe_str(meta.get("toss_decision"))[:10],
         "winner": winner[:60],
@@ -140,11 +152,24 @@ def load_all() -> None:
     for fpath in delivery_files:
         match_id = fpath.stem
         info_path = cricsheet / f"{match_id}_info.csv"
+        meta: dict[str, str] = {}
+        players: list[tuple[str, str]] = []
+
+        if info_path.exists():
+            try:
+                meta, players = _parse_info_file(info_path)
+                match_rows.append(_build_match_row(match_id, meta))
+                venue_rows.append(_build_venue_row(meta))
+            except Exception as exc:
+                print(f"  ❌ info failed for {info_path.name}: {exc}")
+
+        match_gender = _normalize_gender(meta.get("gender"))
 
         try:
             deliveries = pd.read_csv(fpath, dtype=str, encoding="utf-8", on_bad_lines="skip")
             deliveries = _normalise_columns(deliveries)
             deliveries["match_id"] = match_id
+            deliveries["match_gender"] = match_gender
             deliveries.to_sql(
                 "raw_deliveries",
                 engine,
@@ -157,22 +182,16 @@ def load_all() -> None:
             print(f"  ❌ deliveries failed for {fpath.name}: {exc}")
             continue
 
-        if info_path.exists():
-            try:
-                meta, players = _parse_info_file(info_path)
-                match_rows.append(_build_match_row(match_id, meta))
-                venue_rows.append(_build_venue_row(meta))
-                for team, player_name in players:
-                    squad_rows.append(
-                        {
-                            "team": team,
-                            "player_name": player_name,
-                            "role": "Unknown",
-                            "designation": "XI",
-                        }
-                    )
-            except Exception as exc:
-                print(f"  ❌ info failed for {info_path.name}: {exc}")
+        for team, player_name in players:
+            squad_rows.append(
+                {
+                    "team": team,
+                    "player_name": player_name,
+                    "gender": match_gender,
+                    "role": "Unknown",
+                    "designation": "XI",
+                }
+            )
 
     if match_rows:
         matches_df = pd.DataFrame(match_rows).drop_duplicates(subset=["match_no"])
@@ -183,7 +202,7 @@ def load_all() -> None:
         venues_df.to_sql("raw_venues", engine, schema="bronze", if_exists="append", index=False)
 
     if squad_rows:
-        squads_df = pd.DataFrame(squad_rows).drop_duplicates(subset=["team", "player_name"])
+        squads_df = pd.DataFrame(squad_rows).drop_duplicates(subset=["team", "player_name", "gender"])
         squads_df.to_sql("raw_squads", engine, schema="bronze", if_exists="append", index=False)
 
     print(f"\n  ✅ {total_deliveries:>8} delivery rows -> bronze.raw_deliveries")
