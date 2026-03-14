@@ -23,11 +23,10 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import cross_val_score, train_test_split
-from sqlalchemy import create_engine
 from xgboost import XGBClassifier
 
 sys.path.append(os.path.dirname(__file__))
-from features import build_match_features  # noqa: E402
+from features import build_match_features, load_matches_and_deliveries, normalize_gender_value  # noqa: E402
 
 load_dotenv()
 
@@ -43,13 +42,26 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 metrics_log: dict = {}
 
 
+def _resolve_scope(gender: str | None) -> tuple[str, str]:
+    scope = normalize_gender_value(gender, default="all")
+    suffix = f"_{scope}" if scope in {"male", "female"} else ""
+    return scope, suffix
+
+
+def _metrics_key(base_key: str, scope: str) -> str:
+    return base_key if scope == "all" else f"{base_key}_{scope}"
+
+
 # -- MODEL 1: MATCH OUTCOME CLASSIFICATION ---------------------------
-def train_match_outcome_model():
+def train_match_outcome_model(gender: str | None = None):
+    scope, suffix = _resolve_scope(gender)
     print("\n" + "=" * 55)
-    print("🤖 MODEL 1: Match Outcome Prediction (XGBoost)")
+    print(f"🤖 MODEL 1: Match Outcome Prediction (XGBoost) [{scope.upper()}]")
     print("=" * 55)
 
-    df = build_match_features()
+    df = build_match_features(gender=scope if scope != "all" else None, strict_gender=scope in {"male", "female"})
+    if df.empty:
+        raise ValueError(f"No training rows found for scope '{scope}'")
 
     FEATURE_COLS = [
         "run_rate_diff", "six_rate_diff", "four_rate_diff",
@@ -64,9 +76,11 @@ def train_match_outcome_model():
 
     print(f"  Dataset: {len(X)} matches | Class balance: {y.mean():.2f}")
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
+    if y.nunique() < 2:
+        raise ValueError(f"Not enough class diversity to train match model for scope '{scope}'")
+
+    stratify_y = y if y.value_counts().min() >= 2 else None
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=stratify_y)
 
     model = XGBClassifier(
         n_estimators=200,
@@ -85,15 +99,28 @@ def train_match_outcome_model():
 
     acc = round(accuracy_score(y_test, y_pred) * 100, 2)
     f1 = round(f1_score(y_test, y_pred, average="weighted") * 100, 2)
-    roc_auc = round(roc_auc_score(y_test, y_proba) * 100, 2)
-    cv_scores = cross_val_score(model, X, y, cv=5, scoring="accuracy")
+    try:
+        roc_auc = round(roc_auc_score(y_test, y_proba) * 100, 2)
+    except Exception:
+        roc_auc = None
+
+    cv_scores = np.array([])
+    min_class_count = int(y.value_counts().min())
+    cv_folds = min(5, min_class_count)
+    if cv_folds >= 2:
+        cv_scores = cross_val_score(model, X, y, cv=cv_folds, scoring="accuracy")
 
     print(f"\n  📊 TEST METRICS:")
     print(f"     Accuracy : {acc}%")
     print(f"     F1 Score : {f1}%")
-    print(f"     ROC-AUC  : {roc_auc}%")
-    print(f"     CV Acc   : {cv_scores.mean()*100:.2f}% ± {cv_scores.std()*100:.2f}%")
-    print(f"\n{classification_report(y_test, y_pred, target_names=['Team2 Wins', 'Team1 Wins'])}")
+    print(f"     ROC-AUC  : {f'{roc_auc}%' if roc_auc is not None else 'N/A'}")
+    if cv_scores.size:
+        print(f"     CV Acc   : {cv_scores.mean()*100:.2f}% ± {cv_scores.std()*100:.2f}%")
+    else:
+        print("     CV Acc   : N/A")
+    print(
+        f"\n{classification_report(y_test, y_pred, labels=[0, 1], target_names=['Team2 Wins', 'Team1 Wins'], zero_division=0)}"
+    )
 
     fi = pd.DataFrame({"Feature": FEATURE_COLS, "Importance": model.feature_importances_}).sort_values(
         "Importance", ascending=False
@@ -101,32 +128,35 @@ def train_match_outcome_model():
     print("  🔍 Top 5 Features:")
     print(fi.head(5).to_string(index=False))
 
-    with open(os.path.join(MODELS_DIR, "match_outcome_xgb.pkl"), "wb") as f:
+    model_filename = f"match_outcome_xgb{suffix}.pkl"
+    with open(os.path.join(MODELS_DIR, model_filename), "wb") as f:
         pickle.dump({"model": model, "features": FEATURE_COLS}, f)
 
-    metrics_log["match_outcome"] = {
+    metrics_log[_metrics_key("match_outcome", scope)] = {
         "accuracy": acc,
         "f1": f1,
         "roc_auc": roc_auc,
-        "cv_accuracy": round(cv_scores.mean() * 100, 2),
+        "cv_accuracy": round(float(cv_scores.mean()) * 100, 2) if cv_scores.size else None,
         "top_features": fi.head(5)["Feature"].tolist(),
+        "scope": scope,
     }
-    print("  ✅ Saved → models/match_outcome_xgb.pkl")
+    print(f"  ✅ Saved → models/{model_filename}")
     return model, FEATURE_COLS
 
 
 # -- MODEL 2: SCORE PREDICTION (REGRESSION) -------------------------
-def train_score_model():
+def train_score_model(gender: str | None = None):
+    scope, suffix = _resolve_scope(gender)
     print("\n" + "=" * 55)
-    print("📈 MODEL 2: Score Prediction (LightGBM Regression)")
+    print(f"📈 MODEL 2: Score Prediction (LightGBM Regression) [{scope.upper()}]")
     print("=" * 55)
 
-    DATABASE_URL = (
-        f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}"
-        f"@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
+    matches, deliveries = load_matches_and_deliveries(
+        gender=scope if scope != "all" else None,
+        strict_gender=scope in {"male", "female"},
     )
-    engine = create_engine(DATABASE_URL)
-    deliveries = pd.read_sql("SELECT * FROM silver.clean_deliveries", engine)
+    if deliveries.empty or matches.empty:
+        raise ValueError(f"No deliveries available to train score model for scope '{scope}'")
 
     innings = (
         deliveries.groupby(["match_id", "batting_team"])
@@ -178,17 +208,19 @@ def train_score_model():
     print(f"     MAE  : {mae} runs")
     print(f"     R²   : {r2}")
 
-    with open(os.path.join(MODELS_DIR, "score_predictor_lgbm.pkl"), "wb") as f:
+    model_filename = f"score_predictor_lgbm{suffix}.pkl"
+    with open(os.path.join(MODELS_DIR, model_filename), "wb") as f:
         pickle.dump({"model": model, "features": FEATURES}, f)
 
-    metrics_log["score_prediction"] = {"rmse": rmse, "mae": mae, "r2": r2}
-    print("  ✅ Saved → models/score_predictor_lgbm.pkl")
+    metrics_log[_metrics_key("score_prediction", scope)] = {"rmse": rmse, "mae": mae, "r2": r2, "scope": scope}
+    print(f"  ✅ Saved → models/{model_filename}")
     return model, FEATURES
 
 
 if __name__ == "__main__":
-    train_match_outcome_model()
-    train_score_model()
+    for model_scope in ["male", "female", None]:
+        train_match_outcome_model(model_scope)
+        train_score_model(model_scope)
     with open(os.path.join(RESULTS_DIR, "metrics.json"), "w") as f:
         json.dump(metrics_log, f, indent=2)
     print("\n💾 All metrics saved → results/metrics.json")

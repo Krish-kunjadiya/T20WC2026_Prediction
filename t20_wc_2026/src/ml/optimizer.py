@@ -16,6 +16,11 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 
+try:
+    from features import load_matches_and_deliveries, normalize_gender_value
+except Exception:  # pragma: no cover - import path fallback
+    from src.ml.features import load_matches_and_deliveries, normalize_gender_value
+
 
 load_dotenv()
 DATABASE_URL = (
@@ -43,6 +48,47 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         return default
 
 
+def _filter_players_by_gender(players: pd.DataFrame, gender: Optional[str]) -> pd.DataFrame:
+    scope = normalize_gender_value(gender, default="all")
+    if scope not in {"male", "female"}:
+        return players
+
+    frame = players.copy()
+    if "gender" in frame.columns:
+        normalized = frame["gender"].apply(lambda v: normalize_gender_value(v, default="unknown"))
+        by_col = frame[normalized == scope].copy()
+        if not by_col.empty:
+            return by_col
+
+    try:
+        matches, _ = load_matches_and_deliveries(gender=scope, strict_gender=False)
+        teams = set(
+            pd.concat(
+                [
+                    matches.get("team1", pd.Series(dtype=object)),
+                    matches.get("team2", pd.Series(dtype=object)),
+                ],
+                ignore_index=True,
+            )
+            .dropna()
+            .astype(str)
+            .tolist()
+        )
+        if teams and "country" in frame.columns:
+            by_team = frame[frame["country"].astype(str).isin(teams)].copy()
+            if not by_team.empty:
+                return by_team
+    except Exception:
+        pass
+
+    return frame
+
+
+def _artifact_suffix(gender: Optional[str]) -> str:
+    scope = normalize_gender_value(gender, default="all")
+    return f"_{scope}" if scope in {"male", "female"} else ""
+
+
 # -- OPTIMIZER 1: PLAYING XI SELECTOR ---------------------------------
 def compute_player_score(row: pd.Series) -> float:
     """
@@ -65,17 +111,18 @@ def compute_player_score(row: pd.Series) -> float:
     return round(bat_score + bowl_score + ar_bonus, 2)
 
 
-def select_optimal_xi(country: Optional[str] = None) -> pd.DataFrame:
+def select_optimal_xi(country: Optional[str] = None, gender: Optional[str] = None) -> pd.DataFrame:
     """
     Select optimal 11 players using role composition constraints.
     """
     players = pd.read_sql("SELECT * FROM silver.clean_players", engine)
+    players = _filter_players_by_gender(players, gender)
 
     if country and country != "All Teams":
         players = players[players["country"] == country].copy()
 
     if len(players) < 11:
-        players = pd.read_sql("SELECT * FROM silver.clean_players", engine)
+        print("[WARN] Fewer than 11 eligible players found for selected filters. Returning best available set.")
 
     players["perf_score"] = players.apply(compute_player_score, axis=1)
     players = players.sort_values("perf_score", ascending=False)
@@ -124,18 +171,19 @@ def select_optimal_xi(country: Optional[str] = None) -> pd.DataFrame:
     available_cols = [c for c in required_cols if c in xi_df.columns]
     result = xi_df[available_cols].copy()
 
-    print(f"\n[OK] Optimal XI selected for {country or 'All Teams'}:")
+    scope = normalize_gender_value(gender, default="all")
+    print(f"\n[OK] Optimal XI selected for {country or 'All Teams'} [{scope}]:")
     if all(c in result.columns for c in ["xi_rank", "player_name", "role", "perf_score"]):
         print(result[["xi_rank", "player_name", "role", "perf_score"]].to_string(index=False))
     return result
 
 
 # -- OPTIMIZER 2: BATTING ORDER ---------------------------------------
-def optimize_batting_order(country: Optional[str] = None) -> pd.DataFrame:
+def optimize_batting_order(country: Optional[str] = None, gender: Optional[str] = None) -> pd.DataFrame:
     """
     Optimize batting order with simple cricketing heuristics.
     """
-    xi = select_optimal_xi(country)
+    xi = select_optimal_xi(country, gender)
 
     batters = xi.copy()
     batters["sr"] = batters["strike_rate"].apply(_safe_float)
@@ -183,7 +231,7 @@ def optimize_batting_order(country: Optional[str] = None) -> pd.DataFrame:
 
 
 # -- OPTIMIZER 3: SHAP FEATURE IMPORTANCE -----------------------------
-def compute_shap_importance() -> pd.DataFrame:
+def compute_shap_importance(gender: Optional[str] = None) -> pd.DataFrame:
     """
     Compute SHAP values for the match outcome XGBoost model.
     """
@@ -194,8 +242,10 @@ def compute_shap_importance() -> pd.DataFrame:
     sys.path.append(os.path.dirname(__file__))
     from features import build_match_features  # pylint: disable=import-outside-toplevel
 
-    model_path = os.path.join(MODELS_DIR, "match_outcome_xgb.pkl")
-
+    suffix = _artifact_suffix(gender)
+    model_path = os.path.join(MODELS_DIR, f"match_outcome_xgb{suffix}.pkl")
+    if not os.path.exists(model_path):
+        model_path = os.path.join(MODELS_DIR, "match_outcome_xgb.pkl")
     if not os.path.exists(model_path):
         print("[ERROR] Model not found. Run train_models.py first.")
         return pd.DataFrame()
@@ -206,7 +256,8 @@ def compute_shap_importance() -> pd.DataFrame:
     model = artifact["model"]
     feat_cols = artifact["features"]
 
-    df = build_match_features()
+    scope = normalize_gender_value(gender, default="all")
+    df = build_match_features(gender=scope if scope != "all" else None, strict_gender=False)
     if df.empty:
         print("[ERROR] Feature matrix is empty.")
         return pd.DataFrame()
@@ -229,7 +280,7 @@ def compute_shap_importance() -> pd.DataFrame:
     print(shap_df.to_string(index=False))
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    out_path = os.path.join(RESULTS_DIR, "shap_importance.csv")
+    out_path = os.path.join(RESULTS_DIR, f"shap_importance{suffix}.csv")
     shap_df.to_csv(out_path, index=False)
     print(f"[SAVE] {out_path}")
     return shap_df

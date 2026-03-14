@@ -20,6 +20,18 @@ DATABASE_URL = (
 engine = create_engine(DATABASE_URL)
 
 
+def normalize_gender_value(value: object, default: str = "unknown") -> str:
+    """Normalize gender labels to male/female/unknown."""
+    raw = str(value or "").strip().lower()
+    if raw in {"male", "men", "man", "m", "boys"}:
+        return "male"
+    if raw in {"female", "women", "woman", "f", "girls"}:
+        return "female"
+    if raw in {"", "unknown", "nan", "none", "null"}:
+        return default
+    return default
+
+
 def reset_gold_tables() -> None:
     """Drop existing Gold tables to avoid FK conflicts during reload."""
     print("\nResetting existing Gold tables (if any)")
@@ -86,11 +98,15 @@ def load_dim_player() -> None:
     df["bowling_style"] = "Unknown"
     df["age"] = 0
     df["is_active"] = True
+    df["gender"] = df.get("gender", pd.Series(index=df.index)).apply(
+        lambda x: normalize_gender_value(x, default="unknown")
+    )
 
     keep = [
         "player_id",
         "player_name",
         "country",
+        "gender",
         "role",
         "batting_style",
         "bowling_style",
@@ -157,6 +173,9 @@ def load_dim_match() -> None:
 
     df["toss_winner_id"] = df["toss_winner"].map(team_map)
     df["weather_condition"] = "Clear"
+    df["gender"] = df.get("gender", pd.Series(index=df.index)).apply(
+        lambda x: normalize_gender_value(x, default="unknown")
+    )
 
     if "win_by_runs" in df.columns and "win_by_wickets" in df.columns:
         df["result_type"] = df.apply(
@@ -175,6 +194,7 @@ def load_dim_match() -> None:
 
     keep = [
         "match_id",
+        "gender",
         "toss_winner_id",
         "toss_decision",
         "weather_condition",
@@ -194,7 +214,7 @@ def load_fact_table() -> None:
 
     deliveries = pd.read_sql("SELECT * FROM silver.clean_deliveries", engine)
     matches = pd.read_sql(
-        "SELECT match_id, team1, team2, winner, venue, match_date, player_of_match FROM silver.clean_matches",
+        "SELECT match_id, team1, team2, winner, venue, match_date, player_of_match, gender FROM silver.clean_matches",
         engine,
     )
     players = pd.read_sql("SELECT player_id, player_name FROM gold.dim_player", engine)
@@ -254,6 +274,9 @@ def load_fact_table() -> None:
     fact["team_id"] = fact["_team_k"].map(team_map)
 
     fact = fact.merge(matches, on="match_id", how="left")
+    fact["gender"] = fact.get("gender", pd.Series(index=fact.index)).apply(
+        lambda x: normalize_gender_value(x, default="unknown")
+    )
     fact["date_id"] = pd.to_datetime(fact["match_date"], errors="coerce").dt.date.map(date_map)
     fact["venue_id"] = fact["venue"].astype(str).str.strip().map(venue_map).fillna(1).astype(int)
 
@@ -285,6 +308,7 @@ def load_fact_table() -> None:
 
     keep = [
         "match_id",
+        "gender",
         "player_id",
         "team_id",
         "opponent_team_id",

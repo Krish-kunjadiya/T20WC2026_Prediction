@@ -17,6 +17,7 @@ import {
   YAxis,
   ZAxis,
 } from 'recharts';
+import api from '../api';
 
 const PIE_COLORS = ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#8b5cf6'];
 
@@ -44,18 +45,32 @@ export default function MainDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('http://localhost:8001/dashboard/summary')
-      .then((res) => res.json())
-      .then((data) => {
+    let cancelled = false;
+
+    const loadDashboard = async () => {
+      try {
+        const { data } = await api.get('/dashboard/summary');
+        if (cancelled) {
+          return;
+        }
         setKpis(data?.kpis || {});
         setCharts(data?.charts || {});
-      })
-      .catch((err) => {
-        console.error(err);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+      } catch (err) {
+        if (!cancelled) {
+          console.error(err);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadDashboard();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const evolutionData = useMemo(() => [...(charts.evolutionData || [])], [charts.evolutionData]);

@@ -18,13 +18,78 @@ DATABASE_URL = (
 engine = create_engine(DATABASE_URL)
 
 
-def build_match_features() -> pd.DataFrame:
+def normalize_gender_value(value: str | None, default: str = "all") -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"male", "men", "man", "m", "boys"}:
+        return "male"
+    if raw in {"female", "women", "woman", "f", "girls"}:
+        return "female"
+    if raw in {"all", "both", "mixed", "any", ""}:
+        return default
+    return default
+
+
+def infer_gender_from_text(*texts: str) -> str:
+    blob = " ".join(str(t or "") for t in texts).lower()
+    if any(token in blob for token in ["women", "female", "girls"]):
+        return "female"
+    if any(token in blob for token in ["men", "male", "boys"]):
+        return "male"
+    return "unknown"
+
+
+def attach_match_gender(matches: pd.DataFrame) -> pd.DataFrame:
+    frame = matches.copy()
+    gender_cols = [col for col in ["gender", "match_gender", "event_gender"] if col in frame.columns]
+
+    if gender_cols:
+        base_col = gender_cols[0]
+        frame["match_gender"] = frame[base_col].apply(lambda v: normalize_gender_value(v, default="unknown"))
+    else:
+        text_cols = [
+            col
+            for col in ["event_name", "event", "competition", "tournament_name", "series_name", "match_type"]
+            if col in frame.columns
+        ]
+        if text_cols:
+            frame["match_gender"] = frame[text_cols].fillna("").astype(str).agg(" ".join, axis=1).apply(
+                lambda v: infer_gender_from_text(v)
+            )
+        else:
+            frame["match_gender"] = "unknown"
+
+    frame["match_gender"] = frame["match_gender"].apply(lambda v: normalize_gender_value(v, default="unknown"))
+    return frame
+
+
+def load_matches_and_deliveries(gender: str | None = None, strict_gender: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+    matches = pd.read_sql("SELECT * FROM silver.clean_matches", engine)
+    deliveries = pd.read_sql("SELECT * FROM silver.clean_deliveries", engine)
+    matches = attach_match_gender(matches)
+
+    selected_gender = normalize_gender_value(gender, default="all")
+    if selected_gender in {"male", "female"} and "match_gender" in matches.columns:
+        filtered = matches[matches["match_gender"] == selected_gender].copy()
+        if not filtered.empty:
+            matches = filtered
+        elif strict_gender:
+            raise ValueError(f"No matches found for gender='{selected_gender}'")
+        else:
+            print(f"⚠️ No matches found for gender='{selected_gender}'. Falling back to full dataset.")
+
+    if not deliveries.empty and "match_id" in deliveries.columns and "match_id" in matches.columns:
+        match_ids = set(matches["match_id"].astype(str).tolist())
+        deliveries = deliveries[deliveries["match_id"].astype(str).isin(match_ids)].copy()
+
+    return matches, deliveries
+
+
+def build_match_features(gender: str | None = None, strict_gender: bool = False) -> pd.DataFrame:
     """
     Build feature matrix for match outcome prediction.
     One row per match with engineered features.
     """
-    matches = pd.read_sql("SELECT * FROM silver.clean_matches", engine)
-    deliveries = pd.read_sql("SELECT * FROM silver.clean_deliveries", engine)
+    matches, deliveries = load_matches_and_deliveries(gender=gender, strict_gender=strict_gender)
 
     # Team-level aggregates from deliveries
     team_bat = (
@@ -121,13 +186,19 @@ def build_match_features() -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows).fillna(0)
+    selected_gender = normalize_gender_value(gender, default="all")
+    df["match_gender_scope"] = selected_gender
     print(f"✅ Feature matrix: {df.shape[0]} rows × {df.shape[1]} cols")
     return df
 
 
-def build_player_features() -> pd.DataFrame:
+def build_player_features(gender: str | None = None, strict_gender: bool = False) -> pd.DataFrame:
     """Build player feature matrix for clustering."""
-    deliveries = pd.read_sql("SELECT * FROM silver.clean_deliveries", engine)
+    _, deliveries = load_matches_and_deliveries(gender=gender, strict_gender=strict_gender)
+
+    if deliveries.empty:
+        cols = ["player_name", "total_runs", "balls_faced", "strike_rate_live", "sixes", "fours", "wickets", "economy_live"]
+        return pd.DataFrame(columns=cols)
 
     bat_stats = (
         deliveries.groupby("batsman")
