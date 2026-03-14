@@ -1,8 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
-import Home from './pages/Home';
-import DataQuality from './pages/DataQuality';
+import MainDashboard from './pages/MainDashboard';
 import Coach from './pages/Coach';
 import Analyst from './pages/Analyst';
 import Commentator from './pages/Commentator';
@@ -16,8 +15,7 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path='/' element={<Layout />}>
-          <Route index element={<Home />} />
-          <Route path='data-quality' element={<DataQuality />} />
+          <Route index element={<MainDashboard />} />
           <Route path='coach' element={<Coach />} />
           <Route path='analyst' element={<Analyst />} />
           <Route path='commentator' element={<Commentator />} />
