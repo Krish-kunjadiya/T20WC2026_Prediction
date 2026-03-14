@@ -178,3 +178,30 @@ def get_metrics() -> Any:
         with open(metrics_path, encoding="utf-8") as f:
             return json.load(f)
     raise HTTPException(status_code=404, detail="Metrics not found")
+
+class QueryRequest(BaseModel):
+    sql: str
+
+@app.post("/query")
+def execute_query(req: QueryRequest) -> dict[str, Any]:
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            df = pd.read_sql(text(req.sql), conn)
+        return {"data": df.to_dict(orient="records")}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class ChatRequest(BaseModel):
+    prompt: str
+    match_context: str | None = None
+
+@app.post("/chat")
+def chat_endpoint(req: ChatRequest) -> dict[str, str]:
+    try:
+        from genai.rag_engine import ask_cricai
+        answer = ask_cricai(req.prompt, match_context=req.match_context)
+        return {"response": answer}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
