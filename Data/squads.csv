@@ -1,301 +1,301 @@
 team,player_name,role,designation
 India,Suryakumar Yadav,Batter,Captain
-India,Abhishek Sharma,All-Rounder,
-India,Sanju Samson,Wicketkeeper-Batter,
-India,Ishan Kishan,Wicketkeeper-Batter,
-India,Tilak Varma,Batter,
-India,Rinku Singh,Batter,
-India,Shivam Dube,All-Rounder,
-India,Hardik Pandya,All-Rounder,
-India,Axar Patel,All-Rounder,
-India,Varun Chakravarthy,Bowler,
-India,Jasprit Bumrah,Bowler,
-India,Arshdeep Singh,Bowler,
-India,Mohammed Siraj,Bowler,
-India,Ravi Bishnoi,Bowler,
-India,Nitish Kumar Reddy,All-Rounder,
+India,Abhishek Sharma,All-Rounder,Player
+India,Sanju Samson,Wicketkeeper-Batter,Player
+India,Ishan Kishan,Wicketkeeper-Batter,Player
+India,Tilak Varma,Batter,Player
+India,Rinku Singh,Batter,Player
+India,Shivam Dube,All-Rounder,Player
+India,Hardik Pandya,All-Rounder,Player
+India,Axar Patel,All-Rounder,Player
+India,Varun Chakravarthy,Bowler,Player
+India,Jasprit Bumrah,Bowler,Player
+India,Arshdeep Singh,Bowler,Player
+India,Mohammed Siraj,Bowler,Player
+India,Ravi Bishnoi,Bowler,Player
+India,Nitish Kumar Reddy,All-Rounder,Player
 New Zealand,Mitchell Santner,All-Rounder,Captain
-New Zealand,Finn Allen,Batter,
-New Zealand,Tim Seifert,Wicketkeeper-Batter,
-New Zealand,Rachin Ravindra,All-Rounder,
-New Zealand,Glenn Phillips,All-Rounder,
-New Zealand,Mark Chapman,Batter,
-New Zealand,Daryl Mitchell,Batter,
-New Zealand,James Neesham,All-Rounder,
-New Zealand,Michael Bracewell,All-Rounder,
-New Zealand,Lockie Ferguson,Bowler,
-New Zealand,Matt Henry,Bowler,
-New Zealand,Ish Sodhi,Bowler,
-New Zealand,Jacob Duffy,Bowler,
-New Zealand,Ben Sears,Bowler,
-New Zealand,Chad Bowes,Batter,
+New Zealand,Finn Allen,Batter,Player
+New Zealand,Tim Seifert,Wicketkeeper-Batter,Player
+New Zealand,Rachin Ravindra,All-Rounder,Player
+New Zealand,Glenn Phillips,All-Rounder,Player
+New Zealand,Mark Chapman,Batter,Player
+New Zealand,Daryl Mitchell,Batter,Player
+New Zealand,James Neesham,All-Rounder,Player
+New Zealand,Michael Bracewell,All-Rounder,Player
+New Zealand,Lockie Ferguson,Bowler,Player
+New Zealand,Matt Henry,Bowler,Player
+New Zealand,Ish Sodhi,Bowler,Player
+New Zealand,Jacob Duffy,Bowler,Player
+New Zealand,Ben Sears,Bowler,Player
+New Zealand,Chad Bowes,Batter,Player
 England,Harry Brook,Batter,Captain
-England,Phil Salt,Wicketkeeper-Batter,
-England,Jos Buttler,Wicketkeeper-Batter,
-England,Will Jacks,All-Rounder,
-England,Jacob Bethell,All-Rounder,
-England,Tom Banton,Batter,
-England,Liam Dawson,All-Rounder,
-England,Sam Curran,All-Rounder,
-England,Adil Rashid,Bowler,
-England,Jofra Archer,Bowler,
-England,Rehan Ahmed,Bowler,
-England,Mark Wood,Bowler,
-England,Gus Atkinson,Bowler,
-England,Brydon Carse,All-Rounder,
-England,Jamie Smith,Wicketkeeper-Batter,
+England,Phil Salt,Wicketkeeper-Batter,Player
+England,Jos Buttler,Wicketkeeper-Batter,Player
+England,Will Jacks,All-Rounder,Player
+England,Jacob Bethell,All-Rounder,Player
+England,Tom Banton,Batter,Player
+England,Liam Dawson,All-Rounder,Player
+England,Sam Curran,All-Rounder,Player
+England,Adil Rashid,Bowler,Player
+England,Jofra Archer,Bowler,Player
+England,Rehan Ahmed,Bowler,Player
+England,Mark Wood,Bowler,Player
+England,Gus Atkinson,Bowler,Player
+England,Brydon Carse,All-Rounder,Player
+England,Jamie Smith,Wicketkeeper-Batter,Player
 South Africa,Aiden Markram,All-Rounder,Captain
-South Africa,Quinton de Kock,Wicketkeeper-Batter,
-South Africa,Dewald Brevis,Batter,
-South Africa,David Miller,Batter,
-South Africa,Tristan Stubbs,Batter,
-South Africa,Heinrich Klaasen,Wicketkeeper-Batter,
-South Africa,Marco Jansen,All-Rounder,
-South Africa,Kagiso Rabada,Bowler,
-South Africa,Anrich Nortje,Bowler,
-South Africa,Lungi Ngidi,Bowler,
-South Africa,Corbin Bosch,All-Rounder,
-South Africa,Kwena Maphaka,Bowler,
-South Africa,Keshav Maharaj,Bowler,
-South Africa,Ryan Rickelton,Batter,
-South Africa,Tabraiz Shamsi,Bowler,
+South Africa,Quinton de Kock,Wicketkeeper-Batter,Player
+South Africa,Dewald Brevis,Batter,Player
+South Africa,David Miller,Batter,Player
+South Africa,Tristan Stubbs,Batter,Player
+South Africa,Heinrich Klaasen,Wicketkeeper-Batter,Player
+South Africa,Marco Jansen,All-Rounder,Player
+South Africa,Kagiso Rabada,Bowler,Player
+South Africa,Anrich Nortje,Bowler,Player
+South Africa,Lungi Ngidi,Bowler,Player
+South Africa,Corbin Bosch,All-Rounder,Player
+South Africa,Kwena Maphaka,Bowler,Player
+South Africa,Keshav Maharaj,Bowler,Player
+South Africa,Ryan Rickelton,Batter,Player
+South Africa,Tabraiz Shamsi,Bowler,Player
 Pakistan,Salman Ali Agha,All-Rounder,Captain
-Pakistan,Babar Azam,Batter,
-Pakistan,Sahibzada Farhan,Batter,
-Pakistan,Saim Ayub,Batter,
-Pakistan,Usman Khan,Batter,
-Pakistan,Shadab Khan,All-Rounder,
-Pakistan,Faheem Ashraf,All-Rounder,
-Pakistan,Mohammad Nawaz,All-Rounder,
-Pakistan,Shaheen Shah Afridi,Bowler,
-Pakistan,Naseem Shah,Bowler,
-Pakistan,Abrar Ahmed,Bowler,
-Pakistan,Imad Wasim,All-Rounder,
-Pakistan,Azam Khan,Wicketkeeper-Batter,
-Pakistan,Fakhar Zaman,Batter,
-Pakistan,Mohammad Amir,Bowler,
+Pakistan,Babar Azam,Batter,Player
+Pakistan,Sahibzada Farhan,Batter,Player
+Pakistan,Saim Ayub,Batter,Player
+Pakistan,Usman Khan,Batter,Player
+Pakistan,Shadab Khan,All-Rounder,Player
+Pakistan,Faheem Ashraf,All-Rounder,Player
+Pakistan,Mohammad Nawaz,All-Rounder,Player
+Pakistan,Shaheen Shah Afridi,Bowler,Player
+Pakistan,Naseem Shah,Bowler,Player
+Pakistan,Abrar Ahmed,Bowler,Player
+Pakistan,Imad Wasim,All-Rounder,Player
+Pakistan,Azam Khan,Wicketkeeper-Batter,Player
+Pakistan,Fakhar Zaman,Batter,Player
+Pakistan,Mohammad Amir,Bowler,Player
 Australia,Mitchell Marsh,All-Rounder,Captain
-Australia,David Warner,Batter,
-Australia,Travis Head,Batter,
-Australia,Glenn Maxwell,All-Rounder,
-Australia,Tim David,All-Rounder,
-Australia,Marcus Stoinis,All-Rounder,
-Australia,Matthew Wade,Wicketkeeper-Batter,
-Australia,Mitchell Starc,Bowler,
-Australia,Adam Zampa,Bowler,
-Australia,Nathan Ellis,Bowler,
-Australia,Spencer Johnson,Bowler,
-Australia,Josh Inglis,Wicketkeeper-Batter,
-Australia,Aaron Hardie,All-Rounder,
-Australia,Cameron Green,All-Rounder,
-Australia,Ashton Agar,All-Rounder,
+Australia,David Warner,Batter,Player
+Australia,Travis Head,Batter,Player
+Australia,Glenn Maxwell,All-Rounder,Player
+Australia,Tim David,All-Rounder,Player
+Australia,Marcus Stoinis,All-Rounder,Player
+Australia,Matthew Wade,Wicketkeeper-Batter,Player
+Australia,Mitchell Starc,Bowler,Player
+Australia,Adam Zampa,Bowler,Player
+Australia,Nathan Ellis,Bowler,Player
+Australia,Spencer Johnson,Bowler,Player
+Australia,Josh Inglis,Wicketkeeper-Batter,Player
+Australia,Aaron Hardie,All-Rounder,Player
+Australia,Cameron Green,All-Rounder,Player
+Australia,Ashton Agar,All-Rounder,Player
 West Indies,Rovman Powell,All-Rounder,Captain
-West Indies,Brandon King,Batter,
-West Indies,Shai Hope,Wicketkeeper-Batter,
-West Indies,Shimron Hetmyer,Batter,
-West Indies,Nicholas Pooran,Wicketkeeper-Batter,
-West Indies,Sherfane Rutherford,All-Rounder,
-West Indies,Andre Russell,All-Rounder,
-West Indies,Romario Shepherd,All-Rounder,
-West Indies,Matthew Forde,Bowler,
-West Indies,Gudakesh Motie,Bowler,
-West Indies,Alzarri Joseph,Bowler,
-West Indies,Obed McCoy,Bowler,
-West Indies,Akeal Hosein,All-Rounder,
-West Indies,Kyle Mayers,All-Rounder,
-West Indies,Johnson Charles,Batter,
+West Indies,Brandon King,Batter,Player
+West Indies,Shai Hope,Wicketkeeper-Batter,Player
+West Indies,Shimron Hetmyer,Batter,Player
+West Indies,Nicholas Pooran,Wicketkeeper-Batter,Player
+West Indies,Sherfane Rutherford,All-Rounder,Player
+West Indies,Andre Russell,All-Rounder,Player
+West Indies,Romario Shepherd,All-Rounder,Player
+West Indies,Matthew Forde,Bowler,Player
+West Indies,Gudakesh Motie,Bowler,Player
+West Indies,Alzarri Joseph,Bowler,Player
+West Indies,Obed McCoy,Bowler,Player
+West Indies,Akeal Hosein,All-Rounder,Player
+West Indies,Kyle Mayers,All-Rounder,Player
+West Indies,Johnson Charles,Batter,Player
 Sri Lanka,Wanindu Hasaranga,All-Rounder,Captain
-Sri Lanka,Pathum Nissanka,Batter,
-Sri Lanka,Kusal Mendis,Wicketkeeper-Batter,
-Sri Lanka,Kamindu Mendis,All-Rounder,
-Sri Lanka,Dasun Shanaka,All-Rounder,
-Sri Lanka,Charith Asalanka,Batter,
-Sri Lanka,Dunith Wellalage,All-Rounder,
-Sri Lanka,Maheesh Theekshana,Bowler,
-Sri Lanka,Nuwan Thushara,Bowler,
-Sri Lanka,Matheesha Pathirana,Bowler,
-Sri Lanka,Dushmantha Chameera,Bowler,
-Sri Lanka,Kamil Mishara,Batter,
-Sri Lanka,Pavan Rathnayake,All-Rounder,
-Sri Lanka,Bhanuka Rajapaksa,Batter,
-Sri Lanka,Dilshan Madushanka,Bowler,
+Sri Lanka,Pathum Nissanka,Batter,Player
+Sri Lanka,Kusal Mendis,Wicketkeeper-Batter,Player
+Sri Lanka,Kamindu Mendis,All-Rounder,Player
+Sri Lanka,Dasun Shanaka,All-Rounder,Player
+Sri Lanka,Charith Asalanka,Batter,Player
+Sri Lanka,Dunith Wellalage,All-Rounder,Player
+Sri Lanka,Maheesh Theekshana,Bowler,Player
+Sri Lanka,Nuwan Thushara,Bowler,Player
+Sri Lanka,Matheesha Pathirana,Bowler,Player
+Sri Lanka,Dushmantha Chameera,Bowler,Player
+Sri Lanka,Kamil Mishara,Batter,Player
+Sri Lanka,Pavan Rathnayake,All-Rounder,Player
+Sri Lanka,Bhanuka Rajapaksa,Batter,Player
+Sri Lanka,Dilshan Madushanka,Bowler,Player
 Zimbabwe,Sikandar Raza,All-Rounder,Captain
-Zimbabwe,Brian Bennett,Batter,
-Zimbabwe,Craig Ervine,Batter,
-Zimbabwe,Sean Williams,All-Rounder,
-Zimbabwe,Blessing Muzarabani,Bowler,
-Zimbabwe,Brad Evans,All-Rounder,
-Zimbabwe,Richard Ngarava,Bowler,
-Zimbabwe,Luke Jongwe,All-Rounder,
-Zimbabwe,Regis Chakabva,Wicketkeeper-Batter,
-Zimbabwe,Clive Madande,Wicketkeeper-Batter,
-Zimbabwe,Wessly Madhevere,All-Rounder,
-Zimbabwe,Ryan Burl,All-Rounder,
-Zimbabwe,Tendai Chatara,Bowler,
-Zimbabwe,Milton Shumba,Batter,
-Zimbabwe,Dion Myers,All-Rounder,
+Zimbabwe,Brian Bennett,Batter,Player
+Zimbabwe,Craig Ervine,Batter,Player
+Zimbabwe,Sean Williams,All-Rounder,Player
+Zimbabwe,Blessing Muzarabani,Bowler,Player
+Zimbabwe,Brad Evans,All-Rounder,Player
+Zimbabwe,Richard Ngarava,Bowler,Player
+Zimbabwe,Luke Jongwe,All-Rounder,Player
+Zimbabwe,Regis Chakabva,Wicketkeeper-Batter,Player
+Zimbabwe,Clive Madande,Wicketkeeper-Batter,Player
+Zimbabwe,Wessly Madhevere,All-Rounder,Player
+Zimbabwe,Ryan Burl,All-Rounder,Player
+Zimbabwe,Tendai Chatara,Bowler,Player
+Zimbabwe,Milton Shumba,Batter,Player
+Zimbabwe,Dion Myers,All-Rounder,Player
 Scotland,Richie Berrington,Batter,Captain
-Scotland,George Munsey,Batter,
-Scotland,Matthew Cross,Wicketkeeper-Batter,
-Scotland,Michael Jones,All-Rounder,
-Scotland,Brandon McMullen,All-Rounder,
-Scotland,Tom Bruce,Batter,
-Scotland,Mark Watt,Bowler,
-Scotland,Brad Currie,Bowler,
-Scotland,Safyaan Sharif,Bowler,
-Scotland,Michael Leask,All-Rounder,
-Scotland,Oliver Davidson,All-Rounder,
-Scotland,Chris Greaves,All-Rounder,
-Scotland,Hamza Tahir,Bowler,
-Scotland,Calum MacLeod,Batter,
-Scotland,Josh Davey,Bowler,
+Scotland,George Munsey,Batter,Player
+Scotland,Matthew Cross,Wicketkeeper-Batter,Player
+Scotland,Michael Jones,All-Rounder,Player
+Scotland,Brandon McMullen,All-Rounder,Player
+Scotland,Tom Bruce,Batter,Player
+Scotland,Mark Watt,Bowler,Player
+Scotland,Brad Currie,Bowler,Player
+Scotland,Safyaan Sharif,Bowler,Player
+Scotland,Michael Leask,All-Rounder,Player
+Scotland,Oliver Davidson,All-Rounder,Player
+Scotland,Chris Greaves,All-Rounder,Player
+Scotland,Hamza Tahir,Bowler,Player
+Scotland,Calum MacLeod,Batter,Player
+Scotland,Josh Davey,Bowler,Player
 Ireland,Paul Stirling,Batter,Captain
-Ireland,Andrew Balbirnie,Batter,
-Ireland,Ross Adair,Batter,
-Ireland,Lorcan Tucker,Wicketkeeper-Batter,
-Ireland,Harry Tector,Batter,
-Ireland,Tim Tector,All-Rounder,
-Ireland,Curtis Campher,All-Rounder,
-Ireland,George Dockrell,All-Rounder,
-Ireland,Mark Adair,All-Rounder,
-Ireland,Barry McCarthy,Bowler,
-Ireland,Josh Little,Bowler,
-Ireland,Ben Calitz,Batter,
-Ireland,Gareth Delany,All-Rounder,
-Ireland,Matthew Humphreys,Bowler,
-Ireland,Craig Young,Bowler,
+Ireland,Andrew Balbirnie,Batter,Player
+Ireland,Ross Adair,Batter,Player
+Ireland,Lorcan Tucker,Wicketkeeper-Batter,Player
+Ireland,Harry Tector,Batter,Player
+Ireland,Tim Tector,All-Rounder,Player
+Ireland,Curtis Campher,All-Rounder,Player
+Ireland,George Dockrell,All-Rounder,Player
+Ireland,Mark Adair,All-Rounder,Player
+Ireland,Barry McCarthy,Bowler,Player
+Ireland,Josh Little,Bowler,Player
+Ireland,Ben Calitz,Batter,Player
+Ireland,Gareth Delany,All-Rounder,Player
+Ireland,Matthew Humphreys,Bowler,Player
+Ireland,Craig Young,Bowler,Player
 Afghanistan,Rashid Khan,All-Rounder,Captain
-Afghanistan,Rahmanullah Gurbaz,Wicketkeeper-Batter,
-Afghanistan,Ibrahim Zadran,Batter,
-Afghanistan,Sediqullah Atal,Batter,
-Afghanistan,Gulbadin Naib,All-Rounder,
-Afghanistan,Azmatullah Omarzai,All-Rounder,
-Afghanistan,Mohammad Nabi,All-Rounder,
-Afghanistan,Darwish Rasooli,Batter,
-Afghanistan,Naveen-ul-Haq,Bowler,
-Afghanistan,Fazalhaq Farooqi,Bowler,
-Afghanistan,Mujeeb Ur Rahman,Bowler,
-Afghanistan,Noor Ahmad,Bowler,
-Afghanistan,Karim Janat,All-Rounder,
-Afghanistan,Hazratullah Zazai,Batter,
-Afghanistan,Afsar Zazai,Wicketkeeper-Batter,
+Afghanistan,Rahmanullah Gurbaz,Wicketkeeper-Batter,Player
+Afghanistan,Ibrahim Zadran,Batter,Player
+Afghanistan,Sediqullah Atal,Batter,Player
+Afghanistan,Gulbadin Naib,All-Rounder,Player
+Afghanistan,Azmatullah Omarzai,All-Rounder,Player
+Afghanistan,Mohammad Nabi,All-Rounder,Player
+Afghanistan,Darwish Rasooli,Batter,Player
+Afghanistan,Naveen-ul-Haq,Bowler,Player
+Afghanistan,Fazalhaq Farooqi,Bowler,Player
+Afghanistan,Mujeeb Ur Rahman,Bowler,Player
+Afghanistan,Noor Ahmad,Bowler,Player
+Afghanistan,Karim Janat,All-Rounder,Player
+Afghanistan,Hazratullah Zazai,Batter,Player
+Afghanistan,Afsar Zazai,Wicketkeeper-Batter,Player
 Netherlands,Scott Edwards,Wicketkeeper-Batter,Captain
-Netherlands,Max O'Dowd,Batter,
-Netherlands,Bas de Leede,All-Rounder,
-Netherlands,Colin Ackermann,All-Rounder,
-Netherlands,Michael Levitt,Batter,
-Netherlands,Roelof van der Merwe,All-Rounder,
-Netherlands,Logan van Beek,All-Rounder,
-Netherlands,Paul van Meekeren,Bowler,
-Netherlands,Aryan Dutt,Bowler,
-Netherlands,Kyle Klein,Bowler,
-Netherlands,Zach Lion-Cachet,Batter,
-Netherlands,Noah Croes,All-Rounder,
-Netherlands,Teja Nidamanuru,Batter,
-Netherlands,Vivian Kingma,Bowler,
-Netherlands,Tim Pringle,All-Rounder,
+Netherlands,Max O'Dowd,Batter,Player
+Netherlands,Bas de Leede,All-Rounder,Player
+Netherlands,Colin Ackermann,All-Rounder,Player
+Netherlands,Michael Levitt,Batter,Player
+Netherlands,Roelof van der Merwe,All-Rounder,Player
+Netherlands,Logan van Beek,All-Rounder,Player
+Netherlands,Paul van Meekeren,Bowler,Player
+Netherlands,Aryan Dutt,Bowler,Player
+Netherlands,Kyle Klein,Bowler,Player
+Netherlands,Zach Lion-Cachet,Batter,Player
+Netherlands,Noah Croes,All-Rounder,Player
+Netherlands,Teja Nidamanuru,Batter,Player
+Netherlands,Vivian Kingma,Bowler,Player
+Netherlands,Tim Pringle,All-Rounder,Player
 USA,Monank Patel,Wicketkeeper-Batter,Captain
-USA,Andries Gous,Wicketkeeper-Batter,
-USA,Milind Kumar,Batter,
-USA,Shayan Jahangir,Batter,
-USA,Sanjay Krishnamurthi,Batter,
-USA,Shubham Ranjane,All-Rounder,
-USA,Saiteja Mukkamalla,All-Rounder,
-USA,Harmeet Singh,All-Rounder,
-USA,Shadley van Schalkwyk,Bowler,
-USA,Mohammad Mohsin,Bowler,
-USA,Ali Khan,Bowler,
-USA,Nosthush Kenjige,Bowler,
-USA,Jasdeep Singh,Bowler,
-USA,Steven Taylor,Batter,
-USA,Corey Anderson,All-Rounder,
+USA,Andries Gous,Wicketkeeper-Batter,Player
+USA,Milind Kumar,Batter,Player
+USA,Shayan Jahangir,Batter,Player
+USA,Sanjay Krishnamurthi,Batter,Player
+USA,Shubham Ranjane,All-Rounder,Player
+USA,Saiteja Mukkamalla,All-Rounder,Player
+USA,Harmeet Singh,All-Rounder,Player
+USA,Shadley van Schalkwyk,Bowler,Player
+USA,Mohammad Mohsin,Bowler,Player
+USA,Ali Khan,Bowler,Player
+USA,Nosthush Kenjige,Bowler,Player
+USA,Jasdeep Singh,Bowler,Player
+USA,Steven Taylor,Batter,Player
+USA,Corey Anderson,All-Rounder,Player
 Nepal,Rohit Paudel,Batter,Captain
-Nepal,Kushal Bhurtel,Batter,
-Nepal,Aasif Sheikh,Wicketkeeper-Batter,
-Nepal,Aarif Sheikh,Wicketkeeper-Batter,
-Nepal,Dipendra Singh Airee,All-Rounder,
-Nepal,Lokesh Bam,All-Rounder,
-Nepal,Sompal Kami,All-Rounder,
-Nepal,Karan KC,Bowler,
-Nepal,Sandeep Lamichhane,Bowler,
-Nepal,Gulsan Jha,Bowler,
-Nepal,Abinash Bohara,Bowler,
-Nepal,Lalit Rajbanshi,Bowler,
-Nepal,Sundeep Jora,Batter,
-Nepal,Pratis GC,All-Rounder,
-Nepal,Bibek Yadav,Batter,
+Nepal,Kushal Bhurtel,Batter,Player
+Nepal,Aasif Sheikh,Wicketkeeper-Batter,Player
+Nepal,Aarif Sheikh,Wicketkeeper-Batter,Player
+Nepal,Dipendra Singh Airee,All-Rounder,Player
+Nepal,Lokesh Bam,All-Rounder,Player
+Nepal,Sompal Kami,All-Rounder,Player
+Nepal,Karan KC,Bowler,Player
+Nepal,Sandeep Lamichhane,Bowler,Player
+Nepal,Gulsan Jha,Bowler,Player
+Nepal,Abinash Bohara,Bowler,Player
+Nepal,Lalit Rajbanshi,Bowler,Player
+Nepal,Sundeep Jora,Batter,Player
+Nepal,Pratis GC,All-Rounder,Player
+Nepal,Bibek Yadav,Batter,Player
 Canada,Saad Bin Zafar,All-Rounder,Captain
-Canada,Aaron Johnson,Batter,
-Canada,Navneet Dhaliwal,Batter,
-Canada,Nicholas Kirton,Batter,
-Canada,Shreyas Movva,Wicketkeeper-Batter,
-Canada,Dilpreet Bajwa,All-Rounder,
-Canada,Yuvraj Samra,All-Rounder,
-Canada,Dilon Heyliger,Bowler,
-Canada,Kaleem Sana,Bowler,
-Canada,Jeremy Gordon,Bowler,
-Canada,Junaid Siddique,Bowler,
-Canada,Pargat Singh,Bowler,
-Canada,Ravinderpal Singh,Batter,
-Canada,Rishiv Joshi,All-Rounder,
-Canada,Nikhil Dutta,All-Rounder,
+Canada,Aaron Johnson,Batter,Player
+Canada,Navneet Dhaliwal,Batter,Player
+Canada,Nicholas Kirton,Batter,Player
+Canada,Shreyas Movva,Wicketkeeper-Batter,Player
+Canada,Dilpreet Bajwa,All-Rounder,Player
+Canada,Yuvraj Samra,All-Rounder,Player
+Canada,Dilon Heyliger,Bowler,Player
+Canada,Kaleem Sana,Bowler,Player
+Canada,Jeremy Gordon,Bowler,Player
+Canada,Junaid Siddique,Bowler,Player
+Canada,Pargat Singh,Bowler,Player
+Canada,Ravinderpal Singh,Batter,Player
+Canada,Rishiv Joshi,All-Rounder,Player
+Canada,Nikhil Dutta,All-Rounder,Player
 Oman,Aqib Ilyas,All-Rounder,Captain
-Oman,Kashyap Prajapati,Batter,
-Oman,Naseem Khushi,Wicketkeeper-Batter,
-Oman,Zeeshan Maqsood,All-Rounder,
-Oman,Ayaan Khan,All-Rounder,
-Oman,Mehran Khan,Bowler,
-Oman,Bilal Khan,Bowler,
-Oman,Kaleemullah,Bowler,
-Oman,Fayyaz Butt,Bowler,
-Oman,Shoaib Khan,Batter,
-Oman,Mohammad Nadeem,Batter,
-Oman,Ayan Khan,All-Rounder,
-Oman,Rafiullah M,Bowler,
-Oman,Sufyan Mehmood,Batter,
-Oman,Pratik Athavale,Batter,
+Oman,Kashyap Prajapati,Batter,Player
+Oman,Naseem Khushi,Wicketkeeper-Batter,Player
+Oman,Zeeshan Maqsood,All-Rounder,Player
+Oman,Ayaan Khan,All-Rounder,Player
+Oman,Mehran Khan,Bowler,Player
+Oman,Bilal Khan,Bowler,Player
+Oman,Kaleemullah,Bowler,Player
+Oman,Fayyaz Butt,Bowler,Player
+Oman,Shoaib Khan,Batter,Player
+Oman,Mohammad Nadeem,Batter,Player
+Oman,Ayan Khan,All-Rounder,Player
+Oman,Rafiullah M,Bowler,Player
+Oman,Sufyan Mehmood,Batter,Player
+Oman,Pratik Athavale,Batter,Player
 UAE,Muhammad Waseem,Batter,Captain
-UAE,Vriitya Aravind,Wicketkeeper-Batter,
-UAE,CP Rizwan,Batter,
-UAE,Chirag Suri,Batter,
-UAE,Basil Hameed,All-Rounder,
-UAE,Rohan Mustafa,All-Rounder,
-UAE,Karthik Meiyappan,Bowler,
-UAE,Zahoor Khan,Bowler,
-UAE,Junaid Siddique,Bowler,
-UAE,Ahmed Raza,All-Rounder,
-UAE,Alishan Sharafu,All-Rounder,
-UAE,Aayan Afzal Khan,Bowler,
-UAE,Aryan Lakra,All-Rounder,
-UAE,Muhammad Jawadullah,Batter,
-UAE,Dhruv Parashar,Bowler,
+UAE,Vriitya Aravind,Wicketkeeper-Batter,Player
+UAE,CP Rizwan,Batter,Player
+UAE,Chirag Suri,Batter,Player
+UAE,Basil Hameed,All-Rounder,Player
+UAE,Rohan Mustafa,All-Rounder,Player
+UAE,Karthik Meiyappan,Bowler,Player
+UAE,Zahoor Khan,Bowler,Player
+UAE,Junaid Siddique,Bowler,Player
+UAE,Ahmed Raza,All-Rounder,Player
+UAE,Alishan Sharafu,All-Rounder,Player
+UAE,Aayan Afzal Khan,Bowler,Player
+UAE,Aryan Lakra,All-Rounder,Player
+UAE,Muhammad Jawadullah,Batter,Player
+UAE,Dhruv Parashar,Bowler,Player
 Italy,Gareth Berg,All-Rounder,Captain
-Italy,Benjamin Manenti,Bowler,
-Italy,Harry Manenti,Batter,
-Italy,Anthony Mosca,Batter,
-Italy,Justin Mosca,Batter,
-Italy,JT Smuts,All-Rounder,
-Italy,Brijesh Parmar,Batter,
-Italy,Grant Stewart,All-Rounder,
-Italy,Nikolai Smith,Batter,
-Italy,Jaspreet Singh,Bowler,
-Italy,Amir Sharif,Bowler,
-Italy,Manpreet Singh,Bowler,
-Italy,Damian Crowley,Wicketkeeper-Batter,
-Italy,James Davey,All-Rounder,
-Italy,Rackim Herald,All-Rounder,
+Italy,Benjamin Manenti,Bowler,Player
+Italy,Harry Manenti,Batter,Player
+Italy,Anthony Mosca,Batter,Player
+Italy,Justin Mosca,Batter,Player
+Italy,JT Smuts,All-Rounder,Player
+Italy,Brijesh Parmar,Batter,Player
+Italy,Grant Stewart,All-Rounder,Player
+Italy,Nikolai Smith,Batter,Player
+Italy,Jaspreet Singh,Bowler,Player
+Italy,Amir Sharif,Bowler,Player
+Italy,Manpreet Singh,Bowler,Player
+Italy,Damian Crowley,Wicketkeeper-Batter,Player
+Italy,James Davey,All-Rounder,Player
+Italy,Rackim Herald,All-Rounder,Player
 Namibia,Gerhard Erasmus,All-Rounder,Captain
-Namibia,Stephan Baard,Batter,
-Namibia,Michael van Lingen,All-Rounder,
-Namibia,JJ Smit,All-Rounder,
-Namibia,David Wiese,All-Rounder,
-Namibia,Jan Frylinck,All-Rounder,
-Namibia,Zane Green,Wicketkeeper-Batter,
-Namibia,Bernard Scholtz,Bowler,
-Namibia,Ben Shikongo,Bowler,
-Namibia,Ruben Trumpelmann,Bowler,
-Namibia,Tangeni Lungameni,Bowler,
-Namibia,Niko Davin,Batter,
-Namibia,Lohan Louwrens,Batter,
-Namibia,Dylan Leicher,Bowler,
-Namibia,Karl Birkenstock,All-Rounder,
+Namibia,Stephan Baard,Batter,Player
+Namibia,Michael van Lingen,All-Rounder,Player
+Namibia,JJ Smit,All-Rounder,Player
+Namibia,David Wiese,All-Rounder,Player
+Namibia,Jan Frylinck,All-Rounder,Player
+Namibia,Zane Green,Wicketkeeper-Batter,Player
+Namibia,Bernard Scholtz,Bowler,Player
+Namibia,Ben Shikongo,Bowler,Player
+Namibia,Ruben Trumpelmann,Bowler,Player
+Namibia,Tangeni Lungameni,Bowler,Player
+Namibia,Niko Davin,Batter,Player
+Namibia,Lohan Louwrens,Batter,Player
+Namibia,Dylan Leicher,Bowler,Player
+Namibia,Karl Birkenstock,All-Rounder,Player
