@@ -2,9 +2,18 @@ import React from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { Database, Home, User, BarChart2, Mic, BrainCircuit, MessageSquare, Settings } from 'lucide-react';
 import { useGender } from '../context/GenderContext';
+import { useMatchup } from '../context/MatchupContext';
 
 const Layout = () => {
   const { gender, setGender } = useGender();
+  const {
+    teams,
+    selectedTeam,
+    selectedOpponent,
+    setSelectedTeam,
+    setSelectedOpponent,
+    loading: matchupLoading,
+  } = useMatchup();
 
   const navItems = [
     { name: 'Dashboard', path: '/', icon: Home },
@@ -48,7 +57,7 @@ const Layout = () => {
           })}
         </nav>
 
-        <div className="border-t border-gray-200 p-4">
+        <div className="border-t border-gray-200 p-4 space-y-4">
           <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Tournament Dataset</p>
           <div className="grid grid-cols-2 gap-2 bg-gray-100 rounded-lg p-1">
             <button
@@ -73,6 +82,43 @@ const Layout = () => {
           <p className="mt-2 text-[11px] leading-4 text-gray-500">
             All insights and predictions use the selected tournament stream.
           </p>
+
+          <div className="pt-2 border-t border-gray-200">
+            <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Global Matchup</p>
+            <div className="space-y-2">
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-600 mb-1">Team</label>
+                <select
+                  className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm disabled:bg-gray-100"
+                  value={selectedTeam}
+                  onChange={(event) => setSelectedTeam(event.target.value)}
+                  disabled={matchupLoading || teams.length === 0}
+                >
+                  {teams.map((team) => (
+                    <option key={team} value={team}>{team}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-600 mb-1">Opponent</label>
+                <select
+                  className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm disabled:bg-gray-100"
+                  value={selectedOpponent}
+                  onChange={(event) => setSelectedOpponent(event.target.value)}
+                  disabled={matchupLoading || teams.length <= 1}
+                >
+                  {teams.filter((team) => team !== selectedTeam).map((team) => (
+                    <option key={team} value={team}>{team}</option>
+                  ))}
+                </select>
+              </div>
+
+              <p className="text-[11px] leading-4 text-gray-500">
+                Used as the shared default across matchup-driven pages.
+              </p>
+            </div>
+          </div>
         </div>
       </aside>
 

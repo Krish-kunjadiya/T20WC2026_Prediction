@@ -13,6 +13,7 @@ import {
   ZAxis,
 } from 'recharts';
 import api from '../api';
+import { useMatchup } from '../context/MatchupContext';
 
 const TAB_MATCH = 'match';
 const TAB_SCORE = 'score';
@@ -21,8 +22,15 @@ const TAB_RULES = 'rules';
 const TAB_UPSET = 'upset';
 
 const ML = () => {
+  const {
+    teams,
+    selectedTeam,
+    selectedOpponent,
+    setSelectedTeam,
+    setSelectedOpponent,
+    loading: matchupLoading,
+  } = useMatchup();
   const [activeTab, setActiveTab] = useState(TAB_MATCH);
-  const [teams, setTeams] = useState([]);
 
   const [teamA, setTeamA] = useState('');
   const [teamB, setTeamB] = useState('');
@@ -55,25 +63,17 @@ const ML = () => {
   const [loadingRules, setLoadingRules] = useState(false);
 
   useEffect(() => {
-    const loadTeams = async () => {
-      try {
-        const { data } = await api.get('/teams');
-        const loadedTeams = data.teams || [];
-        setTeams(loadedTeams);
-        if (loadedTeams.length >= 2) {
-          setTeamA(loadedTeams[0]);
-          setTeamB(loadedTeams[1]);
-          setTossWin(loadedTeams[0]);
-          setFavTeam(loadedTeams[0]);
-          setUnderdogTeam(loadedTeams[1]);
-          setUpsetTossWinner(loadedTeams[0]);
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    };
-    loadTeams();
-  }, []);
+    if (!selectedTeam || !selectedOpponent) {
+      return;
+    }
+
+    setTeamA(selectedTeam);
+    setTeamB(selectedOpponent);
+    setFavTeam(selectedTeam);
+    setUnderdogTeam(selectedOpponent);
+    setTossWin((prev) => ([selectedTeam, selectedOpponent].includes(prev) ? prev : selectedTeam));
+    setUpsetTossWinner((prev) => ([selectedTeam, selectedOpponent].includes(prev) ? prev : selectedTeam));
+  }, [selectedTeam, selectedOpponent]);
 
   useEffect(() => {
     if (activeTab !== TAB_CLUSTERS || clusters.length > 0) return;
@@ -236,7 +236,16 @@ const ML = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm text-gray-700 mb-1">Team A</label>
-                <select className="w-full border border-gray-300 rounded-md p-2" value={teamA} onChange={(e) => setTeamA(e.target.value)}>
+                <select
+                  className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+                  value={teamA}
+                  onChange={(e) => {
+                    const nextTeam = e.target.value;
+                    setTeamA(nextTeam);
+                    setSelectedTeam(nextTeam);
+                  }}
+                  disabled={matchupLoading || teams.length === 0}
+                >
                   {teams.map((t) => (
                     <option key={t} value={t}>{t}</option>
                   ))}
@@ -244,7 +253,16 @@ const ML = () => {
               </div>
               <div>
                 <label className="block text-sm text-gray-700 mb-1">Team B</label>
-                <select className="w-full border border-gray-300 rounded-md p-2" value={teamB} onChange={(e) => setTeamB(e.target.value)}>
+                <select
+                  className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+                  value={teamB}
+                  onChange={(e) => {
+                    const nextOpponent = e.target.value;
+                    setTeamB(nextOpponent);
+                    setSelectedOpponent(nextOpponent);
+                  }}
+                  disabled={matchupLoading || teams.length <= 1}
+                >
                   {teams.filter((t) => t !== teamA).map((t) => (
                     <option key={t} value={t}>{t}</option>
                   ))}
@@ -470,13 +488,31 @@ const ML = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm text-gray-700 mb-1">Favourite Team</label>
-              <select className="w-full border border-gray-300 rounded-md p-2" value={favTeam} onChange={(e) => setFavTeam(e.target.value)}>
+              <select
+                className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+                value={favTeam}
+                onChange={(e) => {
+                  const nextFav = e.target.value;
+                  setFavTeam(nextFav);
+                  setSelectedTeam(nextFav);
+                }}
+                disabled={matchupLoading || teams.length === 0}
+              >
                 {teams.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
               <label className="block text-sm text-gray-700 mb-1">Underdog Team</label>
-              <select className="w-full border border-gray-300 rounded-md p-2" value={underdogTeam} onChange={(e) => setUnderdogTeam(e.target.value)}>
+              <select
+                className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+                value={underdogTeam}
+                onChange={(e) => {
+                  const nextUnderdog = e.target.value;
+                  setUnderdogTeam(nextUnderdog);
+                  setSelectedOpponent(nextUnderdog);
+                }}
+                disabled={matchupLoading || teams.length <= 1}
+              >
                 {teams.filter((t) => t !== favTeam).map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>

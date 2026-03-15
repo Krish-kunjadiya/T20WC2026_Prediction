@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { MessageSquare, Send } from 'lucide-react';
 import api from '../api';
+import { useMatchup } from '../context/MatchupContext';
 
 const TAB_CHAT = 'chat';
 const TAB_PREVIEW = 'preview';
@@ -25,6 +26,14 @@ const insightPrompts = {
 };
 
 const Chatbot = () => {
+  const {
+    teams,
+    selectedTeam,
+    selectedOpponent,
+    setSelectedTeam,
+    setSelectedOpponent,
+    loading: matchupLoading,
+  } = useMatchup();
   const [activeTab, setActiveTab] = useState(TAB_CHAT);
 
   const [messages, setMessages] = useState([
@@ -37,10 +46,7 @@ const Chatbot = () => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const [teams, setTeams] = useState([]);
   const [venues, setVenues] = useState([]);
-  const [teamA, setTeamA] = useState('');
-  const [teamB, setTeamB] = useState('');
   const [venue, setVenue] = useState('Neutral Venue');
   const [preview, setPreview] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -51,14 +57,8 @@ const Chatbot = () => {
   useEffect(() => {
     const loadMeta = async () => {
       try {
-        const [teamRes, venueRes] = await Promise.all([api.get('/teams'), api.get('/venues')]);
-        const loadedTeams = teamRes.data.teams || [];
-        setTeams(loadedTeams);
-        if (loadedTeams.length >= 2) {
-          setTeamA(loadedTeams[0]);
-          setTeamB(loadedTeams[1]);
-        }
-        const loadedVenues = venueRes.data.venues || [];
+        const { data } = await api.get('/venues');
+        const loadedVenues = data.venues || [];
         setVenues(loadedVenues);
         if (loadedVenues.length > 0) {
           setVenue(loadedVenues[0]);
@@ -99,12 +99,12 @@ const Chatbot = () => {
   };
 
   const generatePreview = async () => {
-    if (!teamA || !teamB) return;
+    if (!selectedTeam || !selectedOpponent) return;
     setPreviewLoading(true);
     try {
       const { data } = await api.post('/chat/preview', {
-        team_a: teamA,
-        team_b: teamB,
+        team_a: selectedTeam,
+        team_b: selectedOpponent,
         venue,
       });
       setPreview(data.preview || 'No preview generated.');
@@ -118,11 +118,11 @@ const Chatbot = () => {
 
   const downloadPreview = () => {
     if (!preview) return;
-    const blob = new Blob([`${teamA} vs ${teamB} @ ${venue}\n\n${preview}`], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([`${selectedTeam} vs ${selectedOpponent} @ ${venue}\n\n${preview}`], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `preview_${teamA}_vs_${teamB}.txt`;
+    a.download = `preview_${selectedTeam}_vs_${selectedOpponent}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -221,14 +221,24 @@ const Chatbot = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm text-gray-700 mb-1">Team A</label>
-              <select className="w-full border border-gray-300 rounded-md p-2" value={teamA} onChange={(e) => setTeamA(e.target.value)}>
+              <select
+                className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+                value={selectedTeam}
+                onChange={(e) => setSelectedTeam(e.target.value)}
+                disabled={matchupLoading || teams.length === 0}
+              >
                 {teams.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
               <label className="block text-sm text-gray-700 mb-1">Team B</label>
-              <select className="w-full border border-gray-300 rounded-md p-2" value={teamB} onChange={(e) => setTeamB(e.target.value)}>
-                {teams.filter((t) => t !== teamA).map((t) => <option key={t} value={t}>{t}</option>)}
+              <select
+                className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+                value={selectedOpponent}
+                onChange={(e) => setSelectedOpponent(e.target.value)}
+                disabled={matchupLoading || teams.length <= 1}
+              >
+                {teams.filter((t) => t !== selectedTeam).map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
@@ -249,7 +259,7 @@ const Chatbot = () => {
 
           {preview && (
             <div className="bg-gray-50 border border-gray-200 rounded-md p-4">
-              <h3 className="font-semibold text-gray-900 mb-2">{teamA} vs {teamB}</h3>
+              <h3 className="font-semibold text-gray-900 mb-2">{selectedTeam} vs {selectedOpponent}</h3>
               <p className="text-xs text-gray-500 mb-3">{venue}</p>
               <pre className="whitespace-pre-wrap text-sm text-gray-800 font-sans">{preview}</pre>
             </div>

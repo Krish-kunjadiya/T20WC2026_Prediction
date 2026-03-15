@@ -10,33 +10,35 @@ import {
   YAxis,
 } from 'recharts';
 import api from '../api';
+import { useMatchup } from '../context/MatchupContext';
 
 const emptyInsights = {
   expectedFirstInningsScore: { mean: 0, q25: 0, q75: 0, samples: 0 },
   venuePerformanceIndex: { winPct: 0, matches: 0 },
   headToHeadDominance: { wins: 0, matches: 0, winPct: 50 },
   tossImpactAnalysis: { batFirstWinPct: 0, chasingWinPct: 0, batFirstMatches: 0, chasingMatches: 0 },
-  teamStrengthComparison: {
-    battingIndex: 0,
-    opponentBowlingIndex: 0,
-    differential: 0,
-    opponentBattingIndex: 0,
-    teamBowlingIndex: 0,
-    reverseDifferential: 0,
-  },
   upsetProbabilityIndicator: { favourite: 'N/A', underdog: 'N/A', upsetPct: 0, riskLevel: 'Low' },
   phaseWiseRunScoringEfficiency: [],
-  bowlingPressureMetric: { dotBallPct: 0, wicketFrequencyPct: 0, pressureScore: 0 },
-  qualificationProbability: { probabilityPct: 0 },
+  filtersApplied: { sampledMatches: 0, effectiveSampledMatches: 0, fallbackUsed: false },
 };
 
+const canonicalPair = (teamA, teamB) => [teamA, teamB].map((team) => String(team || '').trim()).sort((a, b) => a.localeCompare(b));
+
 const Analyst = () => {
-  const [meta, setMeta] = useState({ teams: [], venues: [] });
-  const [teamA, setTeamA] = useState('');
-  const [teamB, setTeamB] = useState('');
+  const {
+    teams,
+    selectedTeam,
+    selectedOpponent,
+    setSelectedTeam,
+    setSelectedOpponent,
+    loading: matchupLoading,
+  } = useMatchup();
+  const [meta, setMeta] = useState({ venues: [] });
   const [venue, setVenue] = useState('Neutral Venue');
-  const [tossWinner, setTossWinner] = useState('');
-  const [tossDecision, setTossDecision] = useState('bat');
+  const [useVenueFilter, setUseVenueFilter] = useState(false);
+  const [useTossFilter, setUseTossFilter] = useState(false);
+  const [tossResultFilter, setTossResultFilter] = useState('all');
+  const [tossDecisionFilter, setTossDecisionFilter] = useState('any');
 
   const [winProb, setWinProb] = useState(null);
   const [insights, setInsights] = useState(emptyInsights);
@@ -47,15 +49,9 @@ const Analyst = () => {
     const loadMeta = async () => {
       try {
         const { data } = await api.get('/analyst/meta');
-        const teams = data.teams || [];
         const venues = data.venues || [];
-        setMeta({ teams, venues });
+        setMeta({ venues });
 
-        if (teams.length >= 2) {
-          setTeamA(teams[0]);
-          setTeamB(teams[1]);
-          setTossWinner(teams[0]);
-        }
         if (venues.length > 0) {
           setVenue(venues[0]);
         }
@@ -67,8 +63,9 @@ const Analyst = () => {
     loadMeta();
   }, []);
 
-  const canRun = teamA && teamB && teamA !== teamB;
-  const selectionKey = `${teamA}|${teamB}|${venue}|${tossWinner}|${tossDecision}`;
+  const canRun = selectedTeam && selectedOpponent && selectedTeam !== selectedOpponent;
+  const [pairA, pairB] = canonicalPair(selectedTeam, selectedOpponent);
+  const selectionKey = `${pairA}|${pairB}|${venue}|${useVenueFilter}|${useTossFilter}|${tossResultFilter}|${tossDecisionFilter}`;
   const needsRefresh = Boolean(lastRunKey) && lastRunKey !== selectionKey;
 
   const runAnalysis = async () => {
@@ -78,20 +75,28 @@ const Analyst = () => {
     try {
       const [winRes, insightsRes] = await Promise.all([
         api.post('/analyst/win-probability', {
-          team_a: teamA,
-          team_b: teamB,
-          toss_winner: tossWinner || teamA,
-          toss_decision: tossDecision,
+          team_a: pairA,
+          team_b: pairB,
+          toss_winner: pairA,
+          toss_decision: 'bat',
           venue,
           is_knockout: 0,
+          use_venue_filter: useVenueFilter,
+          use_toss_filter: useTossFilter,
+          toss_result_filter: tossResultFilter,
+          toss_decision_filter: tossDecisionFilter,
         }),
         api.get('/analyst/insights', {
           params: {
-            team: teamA,
-            opponent: teamB,
+            team: pairA,
+            opponent: pairB,
             venue,
-            toss_winner: tossWinner || teamA,
-            toss_decision: tossDecision,
+            toss_winner: pairA,
+            toss_decision: 'bat',
+            use_venue_filter: useVenueFilter,
+            use_toss_filter: useTossFilter,
+            toss_result_filter: tossResultFilter,
+            toss_decision_filter: tossDecisionFilter,
           },
         }),
       ]);
@@ -124,32 +129,23 @@ const Analyst = () => {
     [insights.tossImpactAnalysis]
   );
 
-  const strengthData = useMemo(
-    () => [
-      {
-        metric: 'Team Batting vs Opp Bowling',
-        value: insights.teamStrengthComparison?.differential || 0,
-      },
-      {
-        metric: 'Opp Batting vs Team Bowling',
-        value: insights.teamStrengthComparison?.reverseDifferential || 0,
-      },
-    ],
-    [insights.teamStrengthComparison]
-  );
-
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-10">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">📈 Team Analyst Dashboard</h1>
-        <p className="text-gray-500 mt-2">Win probability, venue intelligence, H2H dominance, and tactical efficiency</p>
+        <h1 className="text-2xl font-bold text-gray-900">Team Analyst Dashboard</h1>
+        <p className="text-gray-500 mt-2">Win probability, venue-aware/toss-aware analysis, and pair-level tactical insights</p>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-100 p-5 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="bg-white rounded-xl border border-gray-100 p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <label className="block text-sm text-gray-700 mb-1">Team A</label>
-          <select className="w-full border border-gray-300 rounded-md p-2" value={teamA} onChange={(e) => setTeamA(e.target.value)}>
-            {(meta.teams || []).map((t) => (
+          <select
+            className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+            value={selectedTeam}
+            onChange={(e) => setSelectedTeam(e.target.value)}
+            disabled={matchupLoading || teams.length === 0}
+          >
+            {teams.map((t) => (
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
@@ -157,34 +153,67 @@ const Analyst = () => {
 
         <div>
           <label className="block text-sm text-gray-700 mb-1">Team B</label>
-          <select className="w-full border border-gray-300 rounded-md p-2" value={teamB} onChange={(e) => setTeamB(e.target.value)}>
-            {(meta.teams || []).filter((t) => t !== teamA).map((t) => (
+          <select
+            className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+            value={selectedOpponent}
+            onChange={(e) => setSelectedOpponent(e.target.value)}
+            disabled={matchupLoading || teams.length <= 1}
+          >
+            {teams.filter((t) => t !== selectedTeam).map((t) => (
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
         </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-100 p-5 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={useVenueFilter} onChange={(e) => setUseVenueFilter(e.target.checked)} />
+          Use selected venue for analysis
+        </label>
 
         <div>
-          <label className="block text-sm text-gray-700 mb-1">Venue</label>
-          <select className="w-full border border-gray-300 rounded-md p-2" value={venue} onChange={(e) => setVenue(e.target.value)}>
+          <label className="block text-xs text-gray-600 mb-1">Venue</label>
+          <select
+            className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+            value={venue}
+            onChange={(e) => setVenue(e.target.value)}
+            disabled={!useVenueFilter}
+          >
             {(meta.venues || []).map((v) => (
               <option key={v} value={v}>{v}</option>
             ))}
           </select>
         </div>
 
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={useTossFilter} onChange={(e) => setUseTossFilter(e.target.checked)} />
+          Use toss-based historical filter
+        </label>
+
         <div>
-          <label className="block text-sm text-gray-700 mb-1">Toss Winner</label>
-          <select className="w-full border border-gray-300 rounded-md p-2" value={tossWinner} onChange={(e) => setTossWinner(e.target.value)}>
-            {[teamA, teamB].filter(Boolean).map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
+          <label className="block text-xs text-gray-600 mb-1">Toss Result Filter</label>
+          <select
+            className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+            value={tossResultFilter}
+            onChange={(e) => setTossResultFilter(e.target.value)}
+            disabled={!useTossFilter}
+          >
+            <option value="all">All</option>
+            <option value="won">Team Won Toss</option>
+            <option value="lost">Team Lost Toss</option>
           </select>
         </div>
 
         <div>
-          <label className="block text-sm text-gray-700 mb-1">Toss Decision</label>
-          <select className="w-full border border-gray-300 rounded-md p-2" value={tossDecision} onChange={(e) => setTossDecision(e.target.value)}>
+          <label className="block text-xs text-gray-600 mb-1">Toss Decision Filter</label>
+          <select
+            className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+            value={tossDecisionFilter}
+            onChange={(e) => setTossDecisionFilter(e.target.value)}
+            disabled={!useTossFilter}
+          >
+            <option value="any">Any</option>
             <option value="bat">Bat First</option>
             <option value="field">Field First</option>
           </select>
@@ -202,10 +231,19 @@ const Analyst = () => {
         {winProb?.confidence !== undefined && (
           <p className="text-sm text-gray-600">Confidence: {winProb.confidence}%</p>
         )}
+        <p className="text-sm text-gray-600">
+          Sampled matches: {insights.filtersApplied?.sampledMatches || 0}
+          {insights.filtersApplied?.fallbackUsed ? ` (fallback used: ${insights.filtersApplied?.effectiveSampledMatches || 0})` : ''}
+        </p>
+        {insights.filtersApplied?.fallbackUsed && (
+          <p className="text-sm text-amber-700">No rows for selected filters. Showing pair-level history fallback.</p>
+        )}
         {needsRefresh && (
           <p className="text-sm text-amber-600">Filters changed. Click Get Insights to refresh results.</p>
         )}
       </div>
+
+      <p className="text-xs text-gray-500">Team pair is normalized to a canonical order so A vs B and B vs A return the same analysis.</p>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl border border-gray-100 p-6">
@@ -242,7 +280,7 @@ const Analyst = () => {
           <div className="bg-white rounded-xl border border-gray-100 p-4">
             <p className="text-xs text-gray-500">Venue Performance Index</p>
             <p className="text-2xl font-bold text-gray-900 mt-1">{insights.venuePerformanceIndex?.winPct || 0}%</p>
-            <p className="text-sm text-gray-600">Matches: {insights.venuePerformanceIndex?.matches || 0}</p>
+            <p className="text-sm text-gray-600">Matches: {insights.venuePerformanceIndex?.matches || 0} ({useVenueFilter ? 'Venue-filtered' : 'All venues'})</p>
           </div>
 
           <div className="bg-white rounded-xl border border-gray-100 p-4">
@@ -255,11 +293,6 @@ const Analyst = () => {
             <p className="text-xs text-gray-500">Upset Probability</p>
             <p className="text-2xl font-bold text-gray-900 mt-1">{insights.upsetProbabilityIndicator?.upsetPct || 0}%</p>
             <p className="text-sm text-gray-600">{insights.upsetProbabilityIndicator?.riskLevel || 'Low'}</p>
-          </div>
-
-          <div className="bg-white rounded-xl border border-gray-100 p-4 sm:col-span-2">
-            <p className="text-xs text-gray-500">Qualification Probability</p>
-            <p className="text-2xl font-bold text-gray-900 mt-1">{insights.qualificationProbability?.probabilityPct || 0}%</p>
           </div>
         </div>
       </div>
@@ -276,8 +309,8 @@ const Analyst = () => {
                   <YAxis />
                   <Tooltip />
                   <Legend />
-                  <Bar dataKey="teamRunRate" fill="#16a34a" name={`${teamA} Run Rate`} radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="opponentRunRate" fill="#dc2626" name={`${teamB} Run Rate`} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="teamRunRate" fill="#16a34a" name={`${selectedTeam} Run Rate`} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="opponentRunRate" fill="#dc2626" name={`${selectedOpponent} Run Rate`} radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -302,44 +335,6 @@ const Analyst = () => {
           <p className="text-sm text-gray-600 mt-2">
             Bat first matches: {insights.tossImpactAnalysis?.batFirstMatches || 0} | Chasing matches: {insights.tossImpactAnalysis?.chasingMatches || 0}
           </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-xl border border-gray-100 p-6">
-          <h2 className="text-lg font-semibold text-gray-800 mb-3">Team Strength Comparison</h2>
-          <div className="h-[320px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={strengthData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="metric" interval={0} angle={-20} textAnchor="end" height={100} />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="value" fill="#2563eb" radius={[6, 6, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          <p className="text-sm text-gray-600 mt-2">
-            Batting Index: {insights.teamStrengthComparison?.battingIndex || 0} | Opp Bowling Index: {insights.teamStrengthComparison?.opponentBowlingIndex || 0}
-          </p>
-        </div>
-
-        <div className="bg-white rounded-xl border border-gray-100 p-6">
-          <h2 className="text-lg font-semibold text-gray-800 mb-3">Bowling Pressure Metric</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-gray-50 border border-gray-200 rounded-md p-4">
-              <p className="text-xs text-gray-500">Dot Ball %</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{insights.bowlingPressureMetric?.dotBallPct || 0}</p>
-            </div>
-            <div className="bg-gray-50 border border-gray-200 rounded-md p-4">
-              <p className="text-xs text-gray-500">Wicket Frequency %</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{insights.bowlingPressureMetric?.wicketFrequencyPct || 0}</p>
-            </div>
-            <div className="bg-gray-50 border border-gray-200 rounded-md p-4">
-              <p className="text-xs text-gray-500">Pressure Score</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{insights.bowlingPressureMetric?.pressureScore || 0}</p>
-            </div>
-          </div>
         </div>
       </div>
     </div>

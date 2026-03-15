@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
+from difflib import SequenceMatcher
 import json
 import os
 import pickle
+import re
 import time
 from contextvars import ContextVar
 from typing import Any, Callable
@@ -203,16 +206,144 @@ def as_bool_int(series: pd.Series) -> pd.Series:
     return text_series.isin(truthy).astype(int)
 
 
-def normalize_venue_name(venue: str | None) -> str:
-    """Normalize frontend venue value for matching in DB records."""
-    raw = str(venue or "").strip()
-    if not raw or raw.lower() == "neutral venue":
+def _normalize_text_token(value: str | None) -> str:
+    """Normalize free text into an alphanumeric comparison token."""
+    token = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+    return re.sub(r"\s+", " ", token)
+
+
+def _split_venue_city(raw_venue: str | None, raw_city: str | None) -> tuple[str, str]:
+    """Split a venue string into stadium/city components using both venue and city fields."""
+    venue_text = " ".join(str(raw_venue or "").split()).strip()
+    city_text = " ".join(str(raw_city or "").split()).strip()
+
+    stadium = venue_text
+    city_from_venue = ""
+    if "," in venue_text:
+        parts = [part.strip() for part in venue_text.split(",") if part.strip()]
+        if parts:
+            stadium = parts[0]
+            if len(parts) > 1:
+                city_from_venue = parts[-1]
+
+    city_value = city_text if city_text.lower() not in {"", "unknown", "nan", "none", "null"} else city_from_venue
+    return (stadium or venue_text), city_value
+
+
+def _majority_city_name(city_values: list[str]) -> str:
+    """Pick a canonical city label using frequency and fuzzy clustering for near-duplicates."""
+    groups: list[dict[str, Any]] = []
+    for city in city_values:
+        clean_city = " ".join(str(city or "").split()).strip()
+        if not clean_city:
+            continue
+        token = _normalize_text_token(clean_city).replace(" ", "")
+        if not token:
+            continue
+
+        matched_group = None
+        for group in groups:
+            ratio = SequenceMatcher(None, token, group["token"]).ratio()
+            if ratio >= 0.88:
+                matched_group = group
+                break
+
+        if matched_group is None:
+            groups.append({"token": token, "values": [clean_city]})
+        else:
+            matched_group["values"].append(clean_city)
+
+    if not groups:
         return ""
 
-    # Frontend often sends "Stadium Name, City".
-    if "," in raw:
-        raw = raw.split(",", 1)[0].strip()
+    best_group = max(groups, key=lambda g: len(g["values"]))
+    city_counts = Counter(best_group["values"])
+    return city_counts.most_common(1)[0][0]
+
+
+def canonicalize_venue_columns(matches: pd.DataFrame) -> pd.DataFrame:
+    """Create canonical venue labels to collapse duplicates and city spelling variants."""
+    if matches.empty:
+        return matches
+
+    frame = matches.copy()
+    stadium_values_by_key: dict[str, list[str]] = defaultdict(list)
+    city_values_by_key: dict[str, list[str]] = defaultdict(list)
+
+    for _, row in frame.iterrows():
+        stadium_raw, city_raw = _split_venue_city(row.get("venue"), row.get("city"))
+        key = _normalize_text_token(stadium_raw or row.get("venue"))
+        if not key:
+            continue
+        if stadium_raw:
+            stadium_values_by_key[key].append(stadium_raw)
+        if city_raw:
+            city_values_by_key[key].append(city_raw)
+
+    stadium_by_key: dict[str, str] = {}
+    for key, names in stadium_values_by_key.items():
+        counts = Counter([" ".join(str(name).split()).strip() for name in names if str(name).strip()])
+        if not counts:
+            stadium_by_key[key] = key.title()
+            continue
+
+        top_frequency = counts.most_common(1)[0][1]
+        candidates = [name for name, freq in counts.items() if freq == top_frequency]
+        stadium_by_key[key] = sorted(candidates, key=lambda n: (-len(n), n.lower()))[0]
+
+    city_by_key: dict[str, str] = {
+        key: _majority_city_name(values) for key, values in city_values_by_key.items()
+    }
+
+    venue_keys: list[str] = []
+    canonical_venues: list[str] = []
+    canonical_cities: list[str] = []
+
+    for _, row in frame.iterrows():
+        stadium_raw, city_raw = _split_venue_city(row.get("venue"), row.get("city"))
+        key = _normalize_text_token(stadium_raw or row.get("venue"))
+        venue_keys.append(key)
+
+        stadium_name = stadium_by_key.get(key, stadium_raw or " ".join(str(row.get("venue") or "").split()).strip())
+        city_name = city_by_key.get(key, city_raw)
+        city_name = " ".join(str(city_name or "").split()).strip()
+
+        canonical_cities.append(city_name)
+        if city_name and city_name.lower() not in {"unknown", "nan", "none", "null"}:
+            canonical_venues.append(f"{stadium_name}, {city_name}")
+        else:
+            canonical_venues.append(stadium_name)
+
+    frame["venue_key"] = venue_keys
+    frame["venue_canonical"] = pd.Series(canonical_venues, index=frame.index)
+    frame["city_canonical"] = pd.Series(canonical_cities, index=frame.index)
+    return frame
+
+
+def normalize_venue_name(venue: str | None) -> str:
+    """Normalize venue label from UI selectors."""
+    raw = " ".join(str(venue or "").split()).strip()
+    if not raw or raw.lower() in {"neutral venue", "all venues"}:
+        return ""
     return raw
+
+
+def list_unique_venues(matches: pd.DataFrame) -> list[str]:
+    """Return sorted canonical venue options for selectors."""
+    if matches.empty:
+        return ["Neutral Venue"]
+
+    venue_col = "venue_canonical" if "venue_canonical" in matches.columns else "venue"
+    venues = sorted(
+        {
+            str(v).strip()
+            for v in matches.get(venue_col, pd.Series(dtype=object)).dropna().astype(str).tolist()
+            if str(v).strip()
+        }
+    )
+    if "Neutral Venue" not in venues:
+        venues.append("Neutral Venue")
+    return venues
 
 
 def batting_first_team(row: pd.Series) -> str:
@@ -266,6 +397,8 @@ def _normalize_matches_frame(matches: pd.DataFrame) -> pd.DataFrame:
             axis=1,
         )
         matches.loc[unknown_mask & inferred.isin(["male", "female"]), "gender"] = inferred[unknown_mask & inferred.isin(["male", "female"])]
+
+    matches = canonicalize_venue_columns(matches)
 
     return matches
 
@@ -383,15 +516,101 @@ def load_players_frame(gender: str | None = None, matches: pd.DataFrame | None =
     return frame[frame["player_name"].astype(str).isin(participants)].copy(deep=False)
 
 
-def filter_matches_by_venue(matches: pd.DataFrame, venue: str | None) -> pd.DataFrame:
-    """Filter matches by a normalized venue string."""
+def filter_matches_by_venue(matches: pd.DataFrame, venue: str | None, strict: bool = False) -> pd.DataFrame:
+    """Filter matches by venue; strict mode returns empty frame when no match is found."""
     venue_norm = normalize_venue_name(venue)
     if not venue_norm or matches.empty:
         return matches
 
-    mask = matches["venue"].str.lower().str.contains(venue_norm.lower(), regex=False)
-    filtered = matches[mask]
-    return filtered if not filtered.empty else matches
+    venue_col = "venue_canonical" if "venue_canonical" in matches.columns else "venue"
+    venue_series = matches.get(venue_col, pd.Series(index=matches.index, dtype=object)).fillna("").astype(str)
+    normalized_series = venue_series.str.lower().str.strip()
+    target = venue_norm.lower().strip()
+
+    exact_mask = normalized_series == target
+    if exact_mask.any():
+        return matches[exact_mask].copy()
+
+    target_stadium = target.split(",", 1)[0].strip()
+    contains_mask = normalized_series.str.contains(target_stadium, regex=False)
+    filtered = matches[contains_mask].copy()
+    if not filtered.empty:
+        return filtered
+
+    return matches.iloc[0:0].copy() if strict else matches
+
+
+def canonical_team_pair(team_a: str, team_b: str) -> tuple[str, str]:
+    """Return a deterministic ordering for team pairs so A-vs-B equals B-vs-A."""
+    a = str(team_a or "").strip()
+    b = str(team_b or "").strip()
+    if not a or not b:
+        return a, b
+    ordered = sorted([a, b], key=lambda value: value.lower())
+    return ordered[0], ordered[1]
+
+
+def normalize_toss_result_filter(value: str | None) -> str:
+    """Normalize toss result filter token."""
+    raw = str(value or "all").strip().lower()
+    if raw in {"won", "win", "toss_won"}:
+        return "won"
+    if raw in {"lost", "lose", "toss_lost"}:
+        return "lost"
+    return "all"
+
+
+def normalize_toss_decision_filter(value: str | None) -> str:
+    """Normalize toss decision filter token."""
+    raw = str(value or "any").strip().lower()
+    if raw in {"bat", "batting", "batted"}:
+        return "bat"
+    if raw in {"field", "bowl", "bowling"}:
+        return "field"
+    return "any"
+
+
+def apply_analyst_match_filters(
+    matches: pd.DataFrame,
+    team: str,
+    opponent: str,
+    venue: str | None,
+    use_venue_filter: bool,
+    use_toss_filter: bool,
+    toss_result_filter: str,
+    toss_decision_filter: str,
+) -> pd.DataFrame:
+    """Apply optional analyst filters over an already gender-scoped matches frame."""
+    if matches.empty:
+        return matches
+
+    filtered = matches[
+        ((matches["team1"] == team) & (matches["team2"] == opponent))
+        | ((matches["team1"] == opponent) & (matches["team2"] == team))
+    ].copy()
+
+    if filtered.empty:
+        return filtered
+
+    if use_venue_filter:
+        filtered = filter_matches_by_venue(filtered, venue, strict=True)
+
+    if filtered.empty:
+        return filtered
+
+    if use_toss_filter:
+        toss_result = normalize_toss_result_filter(toss_result_filter)
+        toss_decision = normalize_toss_decision_filter(toss_decision_filter)
+
+        if toss_result == "won":
+            filtered = filtered[filtered["toss_winner"] == team]
+        elif toss_result == "lost":
+            filtered = filtered[filtered["toss_winner"] != team]
+
+        if not filtered.empty and toss_decision in {"bat", "field"}:
+            filtered = filtered[filtered["toss_decision"].astype(str).str.lower() == toss_decision]
+
+    return filtered.copy()
 
 
 def team_match_subset(matches: pd.DataFrame, team: str) -> pd.DataFrame:
@@ -665,6 +884,41 @@ def build_projected_points_table(points: pd.DataFrame, team: str, margin_runs: i
     simulated = simulated.sort_values(["Pts", "NRR"], ascending=False).reset_index(drop=True)
     simulated["Rank"] = simulated.index + 1
     return simulated
+
+
+def compute_qualification_probability(points: pd.DataFrame, team: str, playoff_slots: int = 4) -> float:
+    """Estimate playoff qualification probability from current rank, points, and NRR cushion."""
+    if points.empty or team not in points.get("Team", pd.Series(dtype=object)).astype(str).values:
+        return 0.0
+
+    slots = max(1, int(playoff_slots))
+    table = points.copy()
+    table["Rank"] = as_numeric(table.get("Rank", pd.Series(index=table.index)), 999).astype(int)
+    table["Pts"] = as_numeric(table.get("Pts", pd.Series(index=table.index)), 0)
+    table["NRR"] = as_numeric(table.get("NRR", pd.Series(index=table.index)), 0)
+
+    row = table[table["Team"].astype(str) == str(team)].head(1)
+    if row.empty:
+        return 0.0
+
+    rank = int(row.iloc[0]["Rank"])
+    pts = float(row.iloc[0]["Pts"])
+    nrr = float(row.iloc[0]["NRR"])
+
+    playoff_band = table.nsmallest(slots, "Rank")
+    cutoff_pts = float(playoff_band["Pts"].min()) if not playoff_band.empty else pts
+    cutoff_nrr = float(playoff_band["NRR"].min()) if not playoff_band.empty else 0.0
+
+    if rank <= slots:
+        base = 68.0 + max(0, slots - rank) * 7.0
+        base += max(0.0, pts - cutoff_pts) * 5.0
+    else:
+        gap = rank - slots
+        base = 48.0 - (gap * 11.0)
+        base += max(0.0, pts - cutoff_pts) * 6.5
+
+    base += (nrr - cutoff_nrr) * 14.0
+    return round(float(clamp(base, 1.0, 99.0)), 1)
 
 
 def compute_upset_probability(
@@ -1015,6 +1269,10 @@ class AnalystWinRequest(BaseModel):
     venue: str = "Neutral Venue"
     is_knockout: int = 0
     gender: str | None = None
+    use_venue_filter: bool = False
+    use_toss_filter: bool = False
+    toss_result_filter: str = "all"
+    toss_decision_filter: str = "any"
 
 
 def build_match_prediction_payload(
@@ -1128,15 +1386,18 @@ def refresh_runtime_caches() -> dict[str, Any]:
 @app.post("/predict/match")
 def predict_match(req: MatchRequest) -> dict[str, Any]:
     selected_gender = normalize_gender_value(req.gender or get_request_gender(), default=normalize_gender_value(DEFAULT_GENDER, "male"))
+    team_a, team_b = canonical_team_pair(req.team_a, req.team_b)
+    toss_winner = req.toss_winner if req.toss_winner in {team_a, team_b} else team_a
+
     matches = load_matches_frame(selected_gender)
     deliveries = load_deliveries_frame(selected_gender, matches=matches)
 
     return build_match_prediction_payload(
         matches=matches,
         deliveries=deliveries,
-        team_a=req.team_a,
-        team_b=req.team_b,
-        toss_winner=req.toss_winner,
+        team_a=team_a,
+        team_b=team_b,
+        toss_winner=toss_winner,
         toss_decision=req.toss_decision,
         is_knockout=req.is_knockout,
         venue=req.venue,
@@ -1223,30 +1484,7 @@ def get_teams() -> dict[str, list[str]]:
 @app.get("/venues")
 def get_venues() -> dict[str, list[str]]:
     matches = load_matches_frame(get_request_gender())
-
-    if {"venue", "city"}.issubset(matches.columns):
-        venues = (
-            matches[["venue", "city"]]
-            .rename(columns={"venue": "stadium_name"})
-            .drop_duplicates(ignore_index=True)
-        )
-    else:
-        venues = pd.read_sql(
-            "SELECT DISTINCT stadium_name, city FROM silver.clean_venues ORDER BY stadium_name, city",
-            engine,
-        )
-
-    venue_list: list[str] = []
-    for _, row in venues.iterrows():
-        stadium = str(row.get("stadium_name") or "").strip()
-        city = str(row.get("city") or "").strip()
-        if not stadium:
-            continue
-        venue_list.append(f"{stadium}, {city}" if city and city.lower() != "unknown" else stadium)
-
-    if "Neutral Venue" not in venue_list:
-        venue_list.append("Neutral Venue")
-    return {"venues": venue_list}
+    return {"venues": list_unique_venues(matches)}
 
 
 @app.get("/players/{country}")
@@ -1282,9 +1520,8 @@ def strategist_overview() -> dict[str, Any]:
 
     qual_data: list[dict[str, Any]] = []
     if not points.empty:
-        top_eight = points.head(8).copy()
-        max_pts = float(top_eight["Pts"].max()) if float(top_eight["Pts"].max()) > 0 else 1.0
-        top_eight["QualPct"] = ((top_eight["Pts"] / max_pts * 72) + (top_eight["NRR"].rank(pct=True) * 28)).clip(0, 100).round(1)
+        table = points.copy()
+        table["QualPct"] = table["Team"].apply(lambda team_name: compute_qualification_probability(points, str(team_name), playoff_slots=4))
         qual_data = [
             {
                 "team": str(row["Team"]),
@@ -1292,7 +1529,7 @@ def strategist_overview() -> dict[str, Any]:
                 "pts": int(row["Pts"]),
                 "nrr": float(row["NRR"]),
             }
-            for _, row in top_eight.iterrows()
+            for _, row in table.head(10).iterrows()
         ]
 
     run_by_margin: list[dict[str, Any]] = []
@@ -1339,6 +1576,877 @@ def strategist_nrr_simulate(team: str, margin_runs: int = 20) -> dict[str, Any]:
         "projectedRank": projected_rank,
         "rankDelta": current_rank - projected_rank,
         "nrrDelta": round(projected_nrr - current_nrr, 3),
+    }
+
+
+@app.get("/strategist/team-insights")
+def strategist_team_insights(team: str, opponent: str, venue: str = "Neutral Venue") -> dict[str, Any]:
+    """Team-vs-opponent strategist payload for qualification and tactical planning."""
+    selected_gender = get_request_gender()
+    team = str(team or "").strip()
+    opponent = str(opponent or "").strip()
+
+    if not team or not opponent or team == opponent:
+        raise HTTPException(status_code=422, detail="team and opponent must be different non-empty values")
+
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
+
+    if matches.empty:
+        raise HTTPException(status_code=404, detail="No match data available")
+
+    team_matches = team_match_subset(matches, team)
+    opponent_matches = team_match_subset(matches, opponent)
+    pair_matches = matches[
+        ((matches["team1"] == team) & (matches["team2"] == opponent))
+        | ((matches["team1"] == opponent) & (matches["team2"] == team))
+    ].copy()
+
+    points = build_points_table(matches)
+    if points.empty or team not in points["Team"].values:
+        raise HTTPException(status_code=404, detail="Team not found in points table")
+
+    current_row = points[points["Team"] == team].iloc[0]
+    current_rank = int(current_row["Rank"])
+    current_pts = int(current_row["Pts"])
+    current_nrr = float(current_row["NRR"])
+    qualification_pct = compute_qualification_probability(points, team, playoff_slots=4)
+
+    top_four = points.nsmallest(4, "Rank") if not points.empty else pd.DataFrame()
+    cutoff_pts = int(top_four["Pts"].min()) if not top_four.empty else current_pts
+
+    def phase_run_rates(side: str) -> dict[str, float]:
+        if deliveries.empty:
+            return {"powerplay": 0.0, "middle": 0.0, "death": 0.0}
+
+        side_deliveries = deliveries[deliveries["batting_team"] == side]
+        if side_deliveries.empty:
+            return {"powerplay": 0.0, "middle": 0.0, "death": 0.0}
+
+        def rr(frame: pd.DataFrame) -> float:
+            if frame.empty:
+                return 0.0
+            return round(float(frame["total_runs"].sum() * 6.0 / max(len(frame), 1)), 2)
+
+        powerplay = side_deliveries[side_deliveries["over_num"] <= 5]
+        middle = side_deliveries[(side_deliveries["over_num"] >= 6) & (side_deliveries["over_num"] <= 14)]
+        death = side_deliveries[side_deliveries["over_num"] >= 15]
+
+        return {
+            "powerplay": rr(powerplay),
+            "middle": rr(middle),
+            "death": rr(death),
+        }
+
+    def lower_order_profile(side: str) -> tuple[float, int]:
+        if deliveries.empty:
+            return 0.0, 0
+
+        side_batting = deliveries[deliveries["batting_team"] == side].copy()
+        if side_batting.empty:
+            return 0.0, 0
+
+        lineup = (
+            side_batting.groupby(["match_id", "inning", "batting_team", "batsman"], as_index=False)
+            .agg(first_over=("over_num", "min"), first_ball=("ball_num", "min"))
+            .sort_values(["match_id", "inning", "first_over", "first_ball", "batsman"], kind="stable")
+        )
+        lineup["batting_position"] = lineup.groupby(["match_id", "inning", "batting_team"]).cumcount() + 1
+
+        batter_runs = (
+            side_batting.groupby(["match_id", "inning", "batting_team", "batsman"], as_index=False)
+            .agg(runs=("batsman_runs", "sum"))
+        )
+
+        depth = lineup.merge(batter_runs, on=["match_id", "inning", "batting_team", "batsman"], how="left")
+        depth = depth[depth["batting_position"].between(6, 8)]
+        if depth.empty:
+            return 0.0, 0
+
+        return round(float(depth["runs"].mean()), 2), int(len(depth))
+
+    team_win_pct = round(float((team_matches["winner"] == team).mean() * 100), 1) if not team_matches.empty else 0.0
+    recent_team_matches = team_matches.sort_values("match_date", ascending=False, kind="stable").head(5)
+    recent_win_pct = round(float((recent_team_matches["winner"] == team).mean() * 100), 1) if not recent_team_matches.empty else 0.0
+    h2h_win_pct = round(float((pair_matches["winner"] == team).mean() * 100), 1) if not pair_matches.empty else 0.0
+
+    team_batting = deliveries[deliveries["batting_team"] == team].copy() if not deliveries.empty else deliveries.iloc[0:0].copy()
+    innings_totals = (
+        team_batting.groupby(["match_id", "inning", "batting_team"], as_index=False)
+        .agg(total_runs=("total_runs", "sum"))
+        if not team_batting.empty
+        else pd.DataFrame(columns=["match_id", "inning", "batting_team", "total_runs"])
+    )
+    average_team_score = round(float(innings_totals["total_runs"].mean()), 1) if not innings_totals.empty else 0.0
+
+    team_phase = phase_run_rates(team)
+    opponent_phase = phase_run_rates(opponent)
+
+    strategy_index = round(
+        float(
+            clamp(
+                (team_win_pct * 0.36)
+                + (recent_win_pct * 0.26)
+                + (h2h_win_pct * 0.20)
+                + (current_nrr * 12.0),
+                0.0,
+                100.0,
+            )
+        ),
+        1,
+    )
+
+    if strategy_index >= 68:
+        strategy_signal = "Strong momentum. Prioritize control and matchup execution."
+    elif strategy_index >= 50:
+        strategy_signal = "Balanced setup. Small tactical edges should decide outcomes."
+    else:
+        strategy_signal = "Pressure phase. Aggressive tactical targeting is required."
+
+    team_bat_first = team_matches[team_matches.apply(batting_first_team, axis=1) == team] if not team_matches.empty else team_matches
+    team_chasing = team_matches[team_matches.apply(batting_first_team, axis=1) != team] if not team_matches.empty else team_matches
+
+    bat_first_win_pct = round(float((team_bat_first["winner"] == team).mean() * 100), 1) if not team_bat_first.empty else 0.0
+    chasing_win_pct = round(float((team_chasing["winner"] == team).mean() * 100), 1) if not team_chasing.empty else 0.0
+
+    innings = build_first_innings_dataset(deliveries)
+    venue_norm = normalize_venue_name(venue)
+    venue_matches = filter_matches_by_venue(matches, venue, strict=True) if venue_norm else matches
+    if venue_matches.empty:
+        venue_matches = matches
+    venue_ids = set(venue_matches["match_id"].astype(str).tolist())
+    venue_first_innings = (
+        innings[(innings["inning"] == 1) & (innings["match_id"].astype(str).isin(venue_ids))]
+        if not innings.empty
+        else pd.DataFrame(columns=["total_runs"])
+    )
+    venue_avg_first_innings = round(float(venue_first_innings["total_runs"].mean()), 1) if not venue_first_innings.empty else 0.0
+
+    if bat_first_win_pct == chasing_win_pct:
+        recommended_toss_decision = "Bat First" if venue_avg_first_innings >= 165 else "Chase"
+    else:
+        bias = 3.0 if venue_avg_first_innings >= 168 else 0.0
+        recommended_toss_decision = "Bat First" if (bat_first_win_pct + bias) >= chasing_win_pct else "Chase"
+
+    weak_phase = min(opponent_phase, key=opponent_phase.get) if any(opponent_phase.values()) else "powerplay"
+    spin_proxy = opponent_phase.get("middle", 0.0)
+    pace_proxy = (opponent_phase.get("powerplay", 0.0) + opponent_phase.get("death", 0.0)) / 2.0
+    weakness_type = "Spin" if spin_proxy <= pace_proxy else "Pace"
+
+    opponent_chasing = opponent_matches[opponent_matches.apply(batting_first_team, axis=1) != opponent] if not opponent_matches.empty else opponent_matches
+    opponent_chasing_win_pct = round(float((opponent_chasing["winner"] == opponent).mean() * 100), 1) if not opponent_chasing.empty else 0.0
+    poor_chasing_record = opponent_chasing_win_pct < 45.0
+
+    opponent_lower_avg, opponent_lower_samples = lower_order_profile(opponent)
+    team_lower_avg, _ = lower_order_profile(team)
+    weak_lower_order = bool(opponent_lower_samples > 0 and opponent_lower_avg < max(14.0, team_lower_avg * 0.82))
+
+    team_bat_agg = (
+        deliveries[deliveries["batting_team"] == team]
+        .groupby("batsman", as_index=False)
+        .agg(runs=("batsman_runs", "sum"), balls=("batsman_runs", "count"))
+        .rename(columns={"batsman": "player"})
+        if not deliveries.empty
+        else pd.DataFrame(columns=["player", "runs", "balls"])
+    )
+    team_bat_agg["strike_rate"] = (team_bat_agg["runs"] * 100.0 / team_bat_agg["balls"].replace(0, 1)).round(2) if not team_bat_agg.empty else 0
+
+    team_bowl_agg = (
+        deliveries[deliveries["bowling_team"] == team]
+        .groupby("bowler", as_index=False)
+        .agg(wickets=("is_wicket_int", "sum"), balls_bowled=("total_runs", "count"), runs_conceded=("total_runs", "sum"))
+        .rename(columns={"bowler": "player"})
+        if not deliveries.empty
+        else pd.DataFrame(columns=["player", "wickets", "balls_bowled", "runs_conceded"])
+    )
+    team_bowl_agg["economy"] = (team_bowl_agg["runs_conceded"] * 6.0 / team_bowl_agg["balls_bowled"].replace(0, 1)).round(2) if not team_bowl_agg.empty else 0
+
+    impact = team_bat_agg.merge(team_bowl_agg, on="player", how="outer")
+    if impact.empty:
+        impact = pd.DataFrame(columns=["player", "runs", "balls", "strike_rate", "wickets", "balls_bowled", "runs_conceded", "economy", "impact_score"])
+    else:
+        for col in ["runs", "balls", "strike_rate", "wickets", "balls_bowled", "runs_conceded", "economy"]:
+            impact[col] = as_numeric(impact.get(col, pd.Series(index=impact.index)), 0)
+        impact["impact_score"] = (
+            (impact["runs"] * 0.22)
+            + (impact["strike_rate"] * 0.08)
+            + (impact["wickets"] * 18.0)
+            - (impact["economy"] * 2.2)
+        ).round(2)
+        impact = impact.sort_values("impact_score", ascending=False, kind="stable")
+
+    team_wins = team_matches[team_matches["winner"] == team] if not team_matches.empty else team_matches
+    match_winning_counts = (
+        team_wins.get("player_of_match", pd.Series(dtype=object))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    match_winning_counts = match_winning_counts[match_winning_counts != ""].value_counts()
+
+    close_wins = team_wins[
+        ((team_wins["win_by_runs"] > 0) & (team_wins["win_by_runs"] <= 15))
+        | ((team_wins["win_by_wickets"] > 0) & (team_wins["win_by_wickets"] <= 4))
+    ] if not team_wins.empty else team_wins
+    clutch_counts = (
+        close_wins.get("player_of_match", pd.Series(dtype=object))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    clutch_counts = clutch_counts[clutch_counts != ""].value_counts()
+
+    vs_bat = (
+        deliveries[(deliveries["batting_team"] == team) & (deliveries["bowling_team"] == opponent)]
+        .groupby("batsman", as_index=False)
+        .agg(runs_vs_opponent=("batsman_runs", "sum"), balls_vs_opponent=("batsman_runs", "count"))
+        .rename(columns={"batsman": "player"})
+        if not deliveries.empty
+        else pd.DataFrame(columns=["player", "runs_vs_opponent", "balls_vs_opponent"])
+    )
+    vs_bat["strike_rate_vs_opponent"] = (
+        vs_bat["runs_vs_opponent"] * 100.0 / vs_bat["balls_vs_opponent"].replace(0, 1)
+    ).round(2) if not vs_bat.empty else 0
+
+    vs_bowl = (
+        deliveries[(deliveries["bowling_team"] == team) & (deliveries["batting_team"] == opponent)]
+        .groupby("bowler", as_index=False)
+        .agg(wickets_vs_opponent=("is_wicket_int", "sum"), balls_bowled_vs_opponent=("total_runs", "count"), runs_conceded_vs_opponent=("total_runs", "sum"))
+        .rename(columns={"bowler": "player"})
+        if not deliveries.empty
+        else pd.DataFrame(columns=["player", "wickets_vs_opponent", "balls_bowled_vs_opponent", "runs_conceded_vs_opponent"])
+    )
+    vs_bowl["economy_vs_opponent"] = (
+        vs_bowl["runs_conceded_vs_opponent"] * 6.0 / vs_bowl["balls_bowled_vs_opponent"].replace(0, 1)
+    ).round(2) if not vs_bowl.empty else 0
+
+    player_vs_opponent = vs_bat.merge(vs_bowl, on="player", how="outer")
+    if player_vs_opponent.empty:
+        player_vs_opponent = pd.DataFrame(columns=["player", "runs_vs_opponent", "wickets_vs_opponent", "matchup_score"])
+    else:
+        for col in [
+            "runs_vs_opponent",
+            "balls_vs_opponent",
+            "strike_rate_vs_opponent",
+            "wickets_vs_opponent",
+            "balls_bowled_vs_opponent",
+            "runs_conceded_vs_opponent",
+            "economy_vs_opponent",
+        ]:
+            player_vs_opponent[col] = as_numeric(player_vs_opponent.get(col, pd.Series(index=player_vs_opponent.index)), 0)
+
+        player_vs_opponent["matchup_score"] = (
+            (player_vs_opponent["runs_vs_opponent"] * 0.18)
+            + (player_vs_opponent["strike_rate_vs_opponent"] * 0.05)
+            + (player_vs_opponent["wickets_vs_opponent"] * 14.0)
+            - (player_vs_opponent["economy_vs_opponent"] * 1.8)
+        ).round(2)
+        player_vs_opponent = player_vs_opponent.sort_values("matchup_score", ascending=False, kind="stable")
+
+    top_impact_players = [
+        {
+            "player": str(row["player"]),
+            "impactScore": float(row["impact_score"]),
+            "runs": int(row["runs"]),
+            "wickets": int(row["wickets"]),
+            "strikeRate": round(float(row["strike_rate"]), 2),
+            "economy": round(float(row["economy"]), 2),
+        }
+        for _, row in impact.head(6).iterrows()
+    ]
+
+    match_winning_performances = [
+        {"player": str(name), "performances": int(count)}
+        for name, count in match_winning_counts.head(6).items()
+    ]
+
+    clutch_indicators: list[dict[str, Any]] = []
+    for row in top_impact_players[:6]:
+        player_name = str(row["player"])
+        clutch = int(clutch_counts.get(player_name, 0))
+        match_wins = int(match_winning_counts.get(player_name, 0))
+        if clutch >= 2 or (match_wins > 0 and (clutch / max(match_wins, 1)) >= 0.4):
+            indicator = "HIGH"
+        elif clutch >= 1:
+            indicator = "MEDIUM"
+        else:
+            indicator = "LOW"
+
+        clutch_indicators.append(
+            {
+                "player": player_name,
+                "clutchWins": clutch,
+                "matchWinningPerformances": match_wins,
+                "indicator": indicator,
+            }
+        )
+
+    player_vs_opponent_rows = [
+        {
+            "player": str(row["player"]),
+            "runsVsOpponent": int(row["runs_vs_opponent"]),
+            "wicketsVsOpponent": int(row["wickets_vs_opponent"]),
+            "strikeRateVsOpponent": round(float(row["strike_rate_vs_opponent"]), 2),
+            "economyVsOpponent": round(float(row["economy_vs_opponent"]), 2),
+            "matchupScore": float(row["matchup_score"]),
+        }
+        for _, row in player_vs_opponent.head(6).iterrows()
+    ]
+
+    scenario_templates = [
+        ("winNext", "If team wins next match", 20),
+        ("loseNext", "If team loses next match", -20),
+        ("winBigMargin", "If team wins by big margin", 50),
+    ]
+    scenario_results: list[dict[str, Any]] = []
+    for scenario_id, label, margin in scenario_templates:
+        projected = build_projected_points_table(points, team, margin)
+        if projected.empty or team not in projected["Team"].values:
+            continue
+        projected_row = projected[projected["Team"] == team].iloc[0]
+        projected_rank = int(projected_row["Rank"])
+        projected_nrr = float(projected_row["NRR"])
+        projected_pts = int(projected_row["Pts"])
+
+        scenario_results.append(
+            {
+                "scenarioId": scenario_id,
+                "label": label,
+                "projectedRank": projected_rank,
+                "projectedPoints": projected_pts,
+                "projectedNrr": round(projected_nrr, 3),
+                "rankDelta": int(current_rank - projected_rank),
+                "nrrDelta": round(projected_nrr - current_nrr, 3),
+                "qualificationProbability": compute_qualification_probability(projected, team, playoff_slots=4),
+            }
+        )
+
+    exploit_notes = [
+        f"Opponent's weakest phase is {weak_phase.title()} (run rate {opponent_phase.get(weak_phase, 0.0)}).",
+        f"Opponent appears more vulnerable to {weakness_type.lower()} pressure.",
+    ]
+    if poor_chasing_record:
+        exploit_notes.append(f"Opponent chasing win rate is low at {opponent_chasing_win_pct}%.")
+    if weak_lower_order:
+        exploit_notes.append(f"Opponent lower-order average (positions 6-8) is {opponent_lower_avg}, below benchmark.")
+
+    ai_strategy_insights: list[str] = []
+    if qualification_pct >= 75:
+        ai_strategy_insights.append(f"{team} is in a strong playoff position ({qualification_pct}% qualification probability). Prioritize low-risk plans.")
+    elif qualification_pct >= 50:
+        ai_strategy_insights.append(f"{team} remains in a competitive playoff race ({qualification_pct}%). Small NRR gains can be decisive.")
+    else:
+        ai_strategy_insights.append(f"{team} is under playoff pressure ({qualification_pct}%). High-impact tactical calls are required immediately.")
+
+    ai_strategy_insights.append(
+        f"Toss strategy leans to {recommended_toss_decision.lower()} based on {bat_first_win_pct}% bat-first win rate, {chasing_win_pct}% chasing win rate, and venue first-innings average {venue_avg_first_innings}."
+    )
+    ai_strategy_insights.append(" ".join(exploit_notes))
+
+    if top_impact_players:
+        top_player = top_impact_players[0]
+        ai_strategy_insights.append(
+            f"Highest impact player is {top_player['player']} (impact {top_player['impactScore']}, runs {top_player['runs']}, wickets {top_player['wickets']})."
+        )
+
+    if scenario_results:
+        best_case = max(scenario_results, key=lambda item: item["qualificationProbability"])
+        worst_case = min(scenario_results, key=lambda item: item["qualificationProbability"])
+        ai_strategy_insights.append(
+            f"Scenario spread: best case '{best_case['label']}' reaches {best_case['qualificationProbability']}% qualification chance vs {worst_case['qualificationProbability']}% in worst case."
+        )
+
+    return {
+        "team": team,
+        "opponent": opponent,
+        "venue": venue_norm or "All venues",
+        "qualificationProbability": {
+            "team": team,
+            "probabilityPct": qualification_pct,
+            "currentRank": current_rank,
+            "currentPoints": current_pts,
+            "currentNrr": round(current_nrr, 3),
+            "playoffCutoffPoints": cutoff_pts,
+        },
+        "matchStrategyOverview": {
+            "overallWinPct": team_win_pct,
+            "recentWinPct": recent_win_pct,
+            "headToHeadWinPct": h2h_win_pct,
+            "nrr": round(current_nrr, 3),
+            "averageTeamScore": average_team_score,
+            "powerplayRunRate": team_phase.get("powerplay", 0.0),
+            "middleRunRate": team_phase.get("middle", 0.0),
+            "deathRunRate": team_phase.get("death", 0.0),
+            "strategyIndex": strategy_index,
+            "strategySignal": strategy_signal,
+        },
+        "optimalTossStrategy": {
+            "batFirstWinPct": bat_first_win_pct,
+            "chasingWinPct": chasing_win_pct,
+            "batFirstMatches": int(len(team_bat_first)),
+            "chasingMatches": int(len(team_chasing)),
+            "venueAvgFirstInningsScore": venue_avg_first_innings,
+            "recommendedTossDecision": recommended_toss_decision,
+        },
+        "opponentWeaknessAnalysis": {
+            "weaknessVsType": weakness_type,
+            "weakPhase": weak_phase.title(),
+            "phaseRunRates": {
+                "powerplay": opponent_phase.get("powerplay", 0.0),
+                "middle": opponent_phase.get("middle", 0.0),
+                "death": opponent_phase.get("death", 0.0),
+            },
+            "chasingWinPct": opponent_chasing_win_pct,
+            "poorChasingRecord": poor_chasing_record,
+            "lowerOrderAverageRuns": opponent_lower_avg,
+            "weakLowerOrder": weak_lower_order,
+            "recommendedExploitation": exploit_notes,
+        },
+        "keyPlayerImpactAnalysis": {
+            "topImpactPlayers": top_impact_players,
+            "matchWinningPerformances": match_winning_performances,
+            "clutchPerformanceIndicator": clutch_indicators,
+            "playerVsOpponentRecord": player_vs_opponent_rows,
+        },
+        "scenarioSimulation": scenario_results,
+        "aiStrategyInsights": ai_strategy_insights,
+    }
+
+
+@app.get("/coach/meta")
+def coach_meta() -> dict[str, Any]:
+    """Return available teams for coach analytics."""
+    selected_gender = get_request_gender()
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
+    players = load_players_frame(selected_gender, matches=matches, deliveries=deliveries)
+
+    teams = sorted(
+        {
+            str(team).strip()
+            for team in players.get("country", pd.Series(dtype=object)).dropna().astype(str).tolist()
+            if str(team).strip()
+        }
+    )
+    if not teams:
+        teams = sorted(
+            {
+                str(team).strip()
+                for team in pd.concat(
+                    [
+                        matches.get("team1", pd.Series(dtype=object)),
+                        matches.get("team2", pd.Series(dtype=object)),
+                    ],
+                    ignore_index=True,
+                )
+                .dropna()
+                .astype(str)
+                .tolist()
+                if str(team).strip()
+            }
+        )
+
+    return {"teams": teams}
+
+
+@app.get("/coach/insights")
+def coach_insights(team: str, opponent: str | None = None, recent_matches: int = 5) -> dict[str, Any]:
+    """Coach dashboard payload with form, phase, matchup, and XI recommendations."""
+    selected_gender = get_request_gender()
+    team = str(team or "").strip()
+    opponent = str(opponent or "").strip()
+    recent_n = int(max(3, min(int(recent_matches or 5), 12)))
+
+    if not team:
+        raise HTTPException(status_code=422, detail="team is required")
+
+    matches = load_matches_frame(selected_gender)
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
+    players = load_players_frame(selected_gender, matches=matches, deliveries=deliveries)
+
+    team_matches = team_match_subset(matches, team).sort_values("match_date", ascending=False, kind="stable")
+    recent_match_frame = team_matches.head(recent_n).copy()
+    recent_ids = set(recent_match_frame.get("match_id", pd.Series(dtype=object)).astype(str).tolist())
+
+    team_bat = deliveries[deliveries["batting_team"] == team].copy() if "batting_team" in deliveries.columns else deliveries.iloc[0:0].copy()
+    team_bowl = deliveries[deliveries["bowling_team"] == team].copy() if "bowling_team" in deliveries.columns else deliveries.iloc[0:0].copy()
+
+    recent_bat = team_bat[team_bat["match_id"].astype(str).isin(recent_ids)].copy() if recent_ids else team_bat.iloc[0:0].copy()
+    recent_bowl = team_bowl[team_bowl["match_id"].astype(str).isin(recent_ids)].copy() if recent_ids else team_bowl.iloc[0:0].copy()
+
+    # Recent form index (last N matches): batting + bowling contribution blended per player-match.
+    bat_pm = pd.DataFrame(columns=["match_id", "player_name", "runs", "balls"])
+    bowl_pm = pd.DataFrame(columns=["match_id", "player_name", "wickets", "runs_conceded", "balls_bowled"])
+
+    if not recent_bat.empty:
+        bat_pm = (
+            recent_bat.groupby(["match_id", "batsman"], as_index=False)
+            .agg(runs=("batsman_runs", "sum"), balls=("batsman_runs", "count"))
+            .rename(columns={"batsman": "player_name"})
+        )
+
+    if not recent_bowl.empty:
+        bowl_pm = (
+            recent_bowl.groupby(["match_id", "bowler"], as_index=False)
+            .agg(
+                wickets=("is_wicket_int", "sum"),
+                runs_conceded=("total_runs", "sum"),
+                balls_bowled=("total_runs", "count"),
+            )
+            .rename(columns={"bowler": "player_name"})
+        )
+
+    contrib = bat_pm.merge(bowl_pm, on=["match_id", "player_name"], how="outer")
+    if contrib.empty:
+        contrib = pd.DataFrame(
+            columns=[
+                "match_id",
+                "player_name",
+                "runs",
+                "balls",
+                "wickets",
+                "runs_conceded",
+                "balls_bowled",
+                "form_score",
+            ]
+        )
+    else:
+        for col in ["runs", "balls", "wickets", "runs_conceded", "balls_bowled"]:
+            contrib[col] = as_numeric(contrib.get(col, pd.Series(index=contrib.index)), 0)
+
+        contrib["strike_rate"] = (contrib["runs"] * 100.0 / contrib["balls"].replace(0, 1)).round(2)
+        contrib["economy"] = (contrib["runs_conceded"] * 6.0 / contrib["balls_bowled"].replace(0, 1)).round(2)
+        contrib["form_score"] = (
+            contrib["runs"]
+            + (contrib["wickets"] * 22.0)
+            + (contrib["strike_rate"] * 0.18)
+            - (contrib["economy"] * 1.6)
+        ).round(2)
+
+    if not contrib.empty and not recent_match_frame.empty:
+        contrib = contrib.merge(recent_match_frame[["match_id", "match_date"]], on="match_id", how="left")
+
+    form_index = pd.DataFrame(columns=["player_name", "form_index", "matches", "total_runs", "total_wickets", "variance"])
+    if not contrib.empty:
+        form_index = (
+            contrib.groupby("player_name", as_index=False)
+            .agg(
+                form_index=("form_score", "mean"),
+                matches=("match_id", "nunique"),
+                total_runs=("runs", "sum"),
+                total_wickets=("wickets", "sum"),
+                variance=("form_score", lambda s: float(s.var(ddof=0)) if len(s) > 0 else 0.0),
+            )
+            .sort_values(["form_index", "total_runs"], ascending=[False, False], kind="stable")
+        )
+
+    top_form = form_index.head(5).copy() if not form_index.empty else pd.DataFrame()
+    top_form_players = (
+        [
+            {
+                "player": str(row["player_name"]),
+                "formIndex": round(float(row["form_index"]), 2),
+                "matches": int(row["matches"]),
+                "runs": int(row["total_runs"]),
+                "wickets": int(row["total_wickets"]),
+            }
+            for _, row in top_form.iterrows()
+        ]
+        if not top_form.empty
+        else []
+    )
+
+    # Best powerplay batter: highest strike rate in overs 1-6.
+    pp = team_bat[team_bat["over_num"].between(0, 5)].copy()
+    pp_stats = pd.DataFrame(columns=["player", "runs", "balls", "strikeRate"])
+    if not pp.empty:
+        pp_stats = (
+            pp.groupby("batsman", as_index=False)
+            .agg(runs=("batsman_runs", "sum"), balls=("batsman_runs", "count"))
+            .rename(columns={"batsman": "player"})
+        )
+        pp_stats = pp_stats[pp_stats["balls"] >= 24] if (pp_stats["balls"] >= 24).any() else pp_stats
+        pp_stats["strikeRate"] = (pp_stats["runs"] * 100.0 / pp_stats["balls"].replace(0, 1)).round(2)
+        pp_stats = pp_stats.sort_values(["strikeRate", "runs"], ascending=[False, False], kind="stable")
+
+    best_powerplay = (
+        {
+            "player": str(pp_stats.iloc[0]["player"]),
+            "strikeRate": float(pp_stats.iloc[0]["strikeRate"]),
+            "runs": int(pp_stats.iloc[0]["runs"]),
+            "balls": int(pp_stats.iloc[0]["balls"]),
+        }
+        if not pp_stats.empty
+        else {"player": "N/A", "strikeRate": 0.0, "runs": 0, "balls": 0}
+    )
+
+    # Most reliable middle-order batter: highest average in overs 7-15.
+    middle = team_bat[team_bat["over_num"].between(6, 14)].copy()
+    middle_stats = pd.DataFrame(columns=["player", "runs", "balls", "dismissals", "average"])
+    if not middle.empty:
+        middle_stats = (
+            middle.groupby("batsman", as_index=False)
+            .agg(
+                runs=("batsman_runs", "sum"),
+                balls=("batsman_runs", "count"),
+                dismissals=("is_wicket_int", "sum"),
+            )
+            .rename(columns={"batsman": "player"})
+        )
+        middle_stats = middle_stats[middle_stats["balls"] >= 24] if (middle_stats["balls"] >= 24).any() else middle_stats
+        middle_stats["average"] = (
+            middle_stats["runs"]
+            / middle_stats["dismissals"].replace(0, 1)
+        ).round(2)
+        middle_stats = middle_stats.sort_values(["average", "runs"], ascending=[False, False], kind="stable")
+
+    best_middle = (
+        {
+            "player": str(middle_stats.iloc[0]["player"]),
+            "average": float(middle_stats.iloc[0]["average"]),
+            "runs": int(middle_stats.iloc[0]["runs"]),
+            "dismissals": int(middle_stats.iloc[0]["dismissals"]),
+        }
+        if not middle_stats.empty
+        else {"player": "N/A", "average": 0.0, "runs": 0, "dismissals": 0}
+    )
+
+    # Best death over bowler: lowest economy in overs 16-20.
+    death = team_bowl[team_bowl["over_num"] >= 15].copy()
+    death_stats = pd.DataFrame(columns=["player", "runs_conceded", "balls", "wickets", "economy"])
+    if not death.empty:
+        death_stats = (
+            death.groupby("bowler", as_index=False)
+            .agg(
+                runs_conceded=("total_runs", "sum"),
+                balls=("total_runs", "count"),
+                wickets=("is_wicket_int", "sum"),
+            )
+            .rename(columns={"bowler": "player"})
+        )
+        death_stats = death_stats[death_stats["balls"] >= 24] if (death_stats["balls"] >= 24).any() else death_stats
+        death_stats["economy"] = (death_stats["runs_conceded"] * 6.0 / death_stats["balls"].replace(0, 1)).round(2)
+        death_stats = death_stats.sort_values(["economy", "wickets"], ascending=[True, False], kind="stable")
+
+    best_death_bowler = (
+        {
+            "player": str(death_stats.iloc[0]["player"]),
+            "economy": float(death_stats.iloc[0]["economy"]),
+            "wickets": int(death_stats.iloc[0]["wickets"]),
+            "balls": int(death_stats.iloc[0]["balls"]),
+        }
+        if not death_stats.empty
+        else {"player": "N/A", "economy": 0.0, "wickets": 0, "balls": 0}
+    )
+
+    # Player matchup advantage: batter success rates vs selected opponent bowlers.
+    matchup_data = pd.DataFrame(columns=["batter", "bowler", "runs", "balls", "dismissals", "success_rate", "advantage_score"])
+    if opponent and opponent != team:
+        matchup_subset = deliveries[
+            (deliveries["batting_team"] == team)
+            & (deliveries["bowling_team"] == opponent)
+        ].copy()
+        if not matchup_subset.empty:
+            matchup_data = (
+                matchup_subset.groupby(["batsman", "bowler"], as_index=False)
+                .agg(
+                    runs=("batsman_runs", "sum"),
+                    balls=("batsman_runs", "count"),
+                    dismissals=("is_wicket_int", "sum"),
+                )
+                .rename(columns={"batsman": "batter"})
+            )
+            matchup_data = matchup_data[matchup_data["balls"] >= 12] if (matchup_data["balls"] >= 12).any() else matchup_data
+            matchup_data["success_rate"] = (matchup_data["runs"] * 100.0 / matchup_data["balls"].replace(0, 1)).round(2)
+            matchup_data["dismissal_rate"] = (matchup_data["dismissals"] * 100.0 / matchup_data["balls"].replace(0, 1)).round(2)
+            matchup_data["advantage_score"] = (
+                matchup_data["success_rate"] - (matchup_data["dismissal_rate"] * 1.4)
+            ).round(2)
+            matchup_data = matchup_data.sort_values(["advantage_score", "runs"], ascending=[False, False], kind="stable")
+
+    matchup_advantage = (
+        {
+            "batter": str(matchup_data.iloc[0]["batter"]),
+            "bowler": str(matchup_data.iloc[0]["bowler"]),
+            "successRate": float(matchup_data.iloc[0]["success_rate"]),
+            "runs": int(matchup_data.iloc[0]["runs"]),
+            "balls": int(matchup_data.iloc[0]["balls"]),
+        }
+        if not matchup_data.empty
+        else {"batter": "N/A", "bowler": "N/A", "successRate": 0.0, "runs": 0, "balls": 0}
+    )
+
+    # Most consistent performer: lowest variance in player contribution score over recent matches.
+    consistency_table = pd.DataFrame(columns=["player_name", "variance", "form_index", "matches"])
+    if not form_index.empty:
+        consistency_table = form_index.copy()
+        min_matches = 3 if recent_n >= 5 else 2
+        consistency_table = consistency_table[consistency_table["matches"] >= min_matches]
+        if consistency_table.empty:
+            consistency_table = form_index.copy()
+        consistency_table = consistency_table.sort_values(["variance", "form_index"], ascending=[True, False], kind="stable")
+
+    most_consistent = (
+        {
+            "player": str(consistency_table.iloc[0]["player_name"]),
+            "variance": round(float(consistency_table.iloc[0]["variance"]), 2),
+            "formIndex": round(float(consistency_table.iloc[0]["form_index"]), 2),
+            "matches": int(consistency_table.iloc[0]["matches"]),
+        }
+        if not consistency_table.empty
+        else {"player": "N/A", "variance": 0.0, "formIndex": 0.0, "matches": 0}
+    )
+
+    # Batting depth strength: average runs by positions 6-8.
+    depth_by_position: list[dict[str, Any]] = []
+    depth_average = 0.0
+    if not recent_bat.empty:
+        lineup = (
+            recent_bat.groupby(["match_id", "inning", "batting_team", "batsman"], as_index=False)
+            .agg(first_over=("over_num", "min"), first_ball=("ball_num", "min"))
+            .sort_values(["match_id", "inning", "first_over", "first_ball", "batsman"], kind="stable")
+        )
+        lineup["batting_position"] = lineup.groupby(["match_id", "inning", "batting_team"]).cumcount() + 1
+
+        batter_runs = (
+            recent_bat.groupby(["match_id", "inning", "batting_team", "batsman"], as_index=False)
+            .agg(runs=("batsman_runs", "sum"))
+        )
+        depth_table = lineup.merge(batter_runs, on=["match_id", "inning", "batting_team", "batsman"], how="left")
+        depth_table = depth_table[depth_table["batting_position"].between(6, 8)]
+        if not depth_table.empty:
+            depth_avg_df = (
+                depth_table.groupby("batting_position", as_index=False)["runs"]
+                .mean()
+                .sort_values("batting_position")
+            )
+            depth_by_position = [
+                {"position": int(row["batting_position"]), "avgRuns": round(float(row["runs"]), 2)}
+                for _, row in depth_avg_df.iterrows()
+            ]
+            depth_average = round(float(depth_table["runs"].mean()), 2)
+
+    # Bowling phase effectiveness: wickets by phase.
+    phase_table = recent_bowl.copy()
+    phase_wickets: list[dict[str, Any]] = []
+    best_phase = {"phase": "N/A", "wickets": 0}
+    if not phase_table.empty:
+        phase_table["phase"] = phase_table["over_num"].apply(
+            lambda ov: "Powerplay" if int(ov) <= 5 else "Middle" if int(ov) <= 14 else "Death"
+        )
+        phase_agg = (
+            phase_table.groupby("phase", as_index=False)["is_wicket_int"]
+            .sum()
+            .rename(columns={"is_wicket_int": "wickets"})
+        )
+        order = ["Powerplay", "Middle", "Death"]
+        phase_agg["phase_order"] = phase_agg["phase"].map({name: idx for idx, name in enumerate(order)})
+        phase_agg = phase_agg.sort_values("phase_order")
+        phase_wickets = [
+            {"phase": str(row["phase"]), "wickets": int(row["wickets"])}
+            for _, row in phase_agg.iterrows()
+        ]
+        top_phase = phase_agg.sort_values("wickets", ascending=False).head(1)
+        if not top_phase.empty:
+            best_phase = {
+                "phase": str(top_phase.iloc[0]["phase"]),
+                "wickets": int(top_phase.iloc[0]["wickets"]),
+            }
+
+    # Player weakness indicator: lowest strike-rate phase profile among regular batters.
+    weakness_indicator = {
+        "player": "N/A",
+        "phase": "N/A",
+        "strikeRate": 0.0,
+        "dismissalRate": 0.0,
+        "note": "Insufficient recent batting samples.",
+    }
+    if not recent_bat.empty:
+        weakness = recent_bat.copy()
+        weakness["phase"] = weakness["over_num"].apply(
+            lambda ov: "Powerplay" if int(ov) <= 5 else "Middle" if int(ov) <= 14 else "Death"
+        )
+        weakness = (
+            weakness.groupby(["batsman", "phase"], as_index=False)
+            .agg(runs=("batsman_runs", "sum"), balls=("batsman_runs", "count"), dismissals=("is_wicket_int", "sum"))
+            .rename(columns={"batsman": "player"})
+        )
+        weakness = weakness[weakness["balls"] >= 18] if (weakness["balls"] >= 18).any() else weakness
+        if not weakness.empty:
+            weakness["strike_rate"] = (weakness["runs"] * 100.0 / weakness["balls"].replace(0, 1)).round(2)
+            weakness["dismissal_rate"] = (weakness["dismissals"] * 100.0 / weakness["balls"].replace(0, 1)).round(2)
+            weakness = weakness.sort_values(["strike_rate", "dismissal_rate"], ascending=[True, False], kind="stable")
+            row = weakness.iloc[0]
+            weakness_indicator = {
+                "player": str(row["player"]),
+                "phase": str(row["phase"]),
+                "strikeRate": float(row["strike_rate"]),
+                "dismissalRate": float(row["dismissal_rate"]),
+                "note": f"{row['player']} has the lowest recent strike rate in {row['phase']} overs.",
+            }
+
+    # Optimal XI suggestion with form and matchup-aware boost.
+    optimal_xi: list[dict[str, Any]] = []
+    try:
+        try:
+            from ml.optimizer import select_optimal_xi
+        except Exception:
+            from src.ml.optimizer import select_optimal_xi
+
+        xi_df = select_optimal_xi(country=team, gender=selected_gender)
+        if not xi_df.empty:
+            xi_df = xi_df.copy()
+            form_map = dict(zip(form_index.get("player_name", pd.Series(dtype=object)), form_index.get("form_index", pd.Series(dtype=float))))
+
+            matchup_bonus_map: dict[str, float] = {}
+            if not matchup_data.empty:
+                batter_bonus = matchup_data.groupby("batter", as_index=False)["advantage_score"].mean()
+                matchup_bonus_map = dict(zip(batter_bonus["batter"], batter_bonus["advantage_score"]))
+
+            xi_df["form_index"] = xi_df.get("player_name", pd.Series(index=xi_df.index)).map(form_map).fillna(0.0)
+            xi_df["matchup_bonus"] = xi_df.get("player_name", pd.Series(index=xi_df.index)).map(matchup_bonus_map).fillna(0.0)
+            xi_df["perf_score"] = as_numeric(xi_df.get("perf_score", pd.Series(index=xi_df.index)), 0)
+            xi_df["composite_score"] = (
+                xi_df["perf_score"] + (xi_df["form_index"] * 0.6) + (xi_df["matchup_bonus"] * 0.08)
+            ).round(2)
+            xi_df = xi_df.sort_values("composite_score", ascending=False, kind="stable").head(11).reset_index(drop=True)
+            xi_df["xi_rank"] = xi_df.index + 1
+
+            keep_cols = [
+                "xi_rank",
+                "player_name",
+                "role",
+                "perf_score",
+                "form_index",
+                "matchup_bonus",
+                "composite_score",
+            ]
+            present_cols = [col for col in keep_cols if col in xi_df.columns]
+            optimal_xi = xi_df[present_cols].to_dict(orient="records")
+    except Exception:
+        optimal_xi = []
+
+    return {
+        "team": team,
+        "opponent": opponent,
+        "recentMatchesAnalyzed": int(len(recent_match_frame)),
+        "topFormPlayers": top_form_players,
+        "bestPowerplayBatter": best_powerplay,
+        "mostReliableMiddleOrderBatter": best_middle,
+        "bestDeathOverBowler": best_death_bowler,
+        "playerMatchupAdvantage": matchup_advantage,
+        "matchupRows": matchup_data.head(12).to_dict(orient="records") if not matchup_data.empty else [],
+        "mostConsistentPerformer": most_consistent,
+        "battingDepthStrength": {
+            "averageRuns": depth_average,
+            "positions": depth_by_position,
+        },
+        "bowlingPhaseEffectiveness": {
+            "bestPhase": best_phase,
+            "phaseWickets": phase_wickets,
+        },
+        "playerWeaknessIndicator": weakness_indicator,
+        "optimalPlayingXI": optimal_xi,
     }
 
 
@@ -1395,11 +2503,69 @@ def get_dashboard_kpis() -> dict[str, Any]:
     deliveries = load_deliveries_frame(selected_gender, matches=matches)
 
     total_matches = int(len(matches))
-    teams = sorted(set(matches["team1"].tolist() + matches["team2"].tolist())) if not matches.empty else []
-    total_teams = len([t for t in teams if str(t).strip()])
+    teams = (
+        sorted(
+            {
+                str(team).strip()
+                for team in pd.concat([matches.get("team1", pd.Series()), matches.get("team2", pd.Series())], ignore_index=True)
+                .dropna()
+                .astype(str)
+                .tolist()
+                if str(team).strip()
+            }
+        )
+        if not matches.empty
+        else []
+    )
 
-    first_innings = build_first_innings_dataset(deliveries)
-    avg_first_score = int(round(float(first_innings[first_innings["inning"] == 1]["total_runs"].mean()))) if not first_innings.empty else 0
+    innings_totals = pd.DataFrame(columns=["match_id", "inning", "batting_team", "total_runs", "balls"])
+    if not deliveries.empty:
+        innings_totals = (
+            deliveries.groupby(["match_id", "inning", "batting_team"], as_index=False)
+            .agg(total_runs=("total_runs", "sum"), balls=("total_runs", "count"))
+        )
+        innings_totals["match_id"] = innings_totals["match_id"].astype(str)
+
+    avg_team_score = float(innings_totals["total_runs"].mean()) if not innings_totals.empty else 0.0
+    highest_team_score = int(innings_totals["total_runs"].max()) if not innings_totals.empty else 0
+
+    lowest_defended_score = 0
+    if not matches.empty and not innings_totals.empty:
+        match_core = matches[["match_id", "team1", "team2", "winner", "toss_winner", "toss_decision"]].copy()
+        match_core["match_id"] = match_core["match_id"].astype(str)
+        match_core["bat_first_team"] = match_core.apply(batting_first_team, axis=1)
+
+        first_innings = innings_totals[innings_totals["inning"] == 1].copy()
+        defended = first_innings.merge(match_core[["match_id", "winner", "bat_first_team"]], on="match_id", how="left")
+        defended = defended[
+            (defended["batting_team"] == defended["winner"])
+            & (defended["batting_team"] == defended["bat_first_team"])
+        ]
+        if not defended.empty:
+            lowest_defended_score = int(defended["total_runs"].min())
+
+    top_nrr = 0.0
+    top_nrr_team = "N/A"
+    if not deliveries.empty:
+        runs_for = (
+            deliveries.groupby("batting_team", as_index=False)
+            .agg(runs_for=("total_runs", "sum"), balls_for=("total_runs", "count"))
+            .rename(columns={"batting_team": "team"})
+        )
+        runs_against = (
+            deliveries.groupby("bowling_team", as_index=False)
+            .agg(runs_against=("total_runs", "sum"), balls_against=("total_runs", "count"))
+            .rename(columns={"bowling_team": "team"})
+        )
+        nrr_table = runs_for.merge(runs_against, on="team", how="outer").fillna(0)
+        if not nrr_table.empty:
+            nrr_table["for_rr"] = (nrr_table["runs_for"] * 6.0) / nrr_table["balls_for"].replace(0, 1)
+            nrr_table["against_rr"] = (nrr_table["runs_against"] * 6.0) / nrr_table["balls_against"].replace(0, 1)
+            nrr_table["nrr"] = nrr_table["for_rr"] - nrr_table["against_rr"]
+            top_row = nrr_table.sort_values("nrr", ascending=False).head(1)
+            if not top_row.empty:
+                top_nrr = float(top_row.iloc[0]["nrr"])
+                top_nrr_team = str(top_row.iloc[0]["team"])
 
     if not matches.empty:
         first_team = matches.apply(batting_first_team, axis=1)
@@ -1408,9 +2574,15 @@ def get_dashboard_kpis() -> dict[str, Any]:
         chase_win = 0.0
 
     payload = {
+        "total_matches_played": total_matches,
+        "average_team_score": round(avg_team_score, 1),
+        "net_run_rate": round(top_nrr, 2),
+        "net_run_rate_team": top_nrr_team,
+        "highest_team_score": highest_team_score,
+        "lowest_defended_score": int(lowest_defended_score),
         "total_matches": total_matches,
-        "total_teams": total_teams,
-        "avg_first_innings_score": avg_first_score,
+        "total_teams": len(teams),
+        "avg_first_innings_score": int(round(avg_team_score)),
         "chasing_win_pct": round(float(chase_win), 1),
     }
     return set_cached_response(cache_key, payload)
@@ -1426,195 +2598,673 @@ def get_dashboard_charts() -> dict[str, Any]:
 
     matches = load_matches_frame(selected_gender)
     deliveries = load_deliveries_frame(selected_gender, matches=matches)
-    players = load_players_frame(selected_gender, matches=matches, deliveries=deliveries)
 
-    evolution_data: list[dict[str, Any]] = []
-    if not matches.empty and not deliveries.empty:
-        first = (
-            deliveries[deliveries["inning"] == 1]
-            .groupby("match_id", as_index=False)
-            .agg(total_runs=("total_runs", "sum"), balls=("total_runs", "count"), wkt=("is_wicket_int", "mean"))
-        )
-        first = first.merge(matches[["match_id", "match_date"]], on="match_id", how="left")
-        first["year"] = first["match_date"].dt.year
-        first["strike_rate"] = (first["total_runs"] / first["balls"].replace(0, 1)) * 100
-        first["wkt_pct"] = first["wkt"] * 100
-        yearly = (
-            first.dropna(subset=["year"])
-            .groupby("year", as_index=False)
-            .agg(avgScore=("total_runs", "mean"), strikeRate=("strike_rate", "mean"), wktProb=("wkt_pct", "mean"))
-            .sort_values("year")
-        )
-        evolution_data = [
-            {
-                "year": int(row["year"]),
-                "avgScore": round(float(row["avgScore"]), 1),
-                "strikeRate": round(float(row["strikeRate"]), 2),
-                "wktProb": round(float(row["wktProb"]), 2),
-            }
-            for _, row in yearly.iterrows()
-        ]
+    def dominant_team(series: pd.Series) -> str:
+        clean = series.dropna().astype(str).str.strip()
+        clean = clean[clean != ""]
+        if clean.empty:
+            return ""
+        return str(clean.value_counts().index[0])
 
-    top_batsmen_data: list[dict[str, Any]] = []
+    team_options = sorted(
+        {
+            str(team).strip()
+            for team in pd.concat([matches.get("team1", pd.Series()), matches.get("team2", pd.Series())], ignore_index=True)
+            .dropna()
+            .astype(str)
+            .tolist()
+            if str(team).strip()
+        }
+    )
+
+    innings_totals = pd.DataFrame(columns=["match_id", "inning", "batting_team", "total_runs", "balls", "wickets_lost"])
     if not deliveries.empty:
-        top_bat = (
-            deliveries.groupby("batsman", as_index=False)["batsman_runs"]
-            .sum()
-            .sort_values("batsman_runs", ascending=False)
-            .head(10)
+        innings_totals = (
+            deliveries.groupby(["match_id", "inning", "batting_team"], as_index=False)
+            .agg(total_runs=("total_runs", "sum"), balls=("total_runs", "count"), wickets_lost=("is_wicket_int", "sum"))
         )
-        top_batsmen_data = [
-            {"player": str(row["batsman"]), "runs": int(row["batsman_runs"])}
-            for _, row in top_bat.iterrows()
-        ]
+        innings_totals["match_id"] = innings_totals["match_id"].astype(str)
 
-    top_bowlers_data: list[dict[str, Any]] = []
+    match_core = matches.copy()
+    if not match_core.empty:
+        for col in ["stage", "tournament_phase", "venue_canonical", "venue"]:
+            if col not in match_core.columns:
+                match_core[col] = ""
+
+        match_core["match_id"] = match_core["match_id"].astype(str)
+        match_core["win_by_runs"] = as_numeric(match_core.get("win_by_runs", pd.Series(index=match_core.index)), 0).astype(int)
+        match_core["win_by_wickets"] = as_numeric(match_core.get("win_by_wickets", pd.Series(index=match_core.index)), 0).astype(int)
+        match_core["bat_first_team"] = match_core.apply(batting_first_team, axis=1)
+
+        if not deliveries.empty:
+            total_runs_match = (
+                deliveries.groupby("match_id", as_index=False)["total_runs"]
+                .sum()
+                .rename(columns={"total_runs": "match_total_runs"})
+            )
+            total_runs_match["match_id"] = total_runs_match["match_id"].astype(str)
+            match_core = match_core.merge(total_runs_match, on="match_id", how="left")
+        else:
+            match_core["match_total_runs"] = 0
+
+        match_core["match_total_runs"] = as_numeric(
+            match_core.get("match_total_runs", pd.Series(index=match_core.index)),
+            0,
+        )
+
+    innings_enriched = pd.DataFrame()
+    if not innings_totals.empty and not match_core.empty:
+        innings_enriched = innings_totals.merge(
+            match_core[
+                [
+                    "match_id",
+                    "winner",
+                    "bat_first_team",
+                    "team1",
+                    "team2",
+                    "match_date",
+                    "match_total_runs",
+                    "venue_canonical",
+                    "venue",
+                    "win_by_runs",
+                    "win_by_wickets",
+                ]
+            ],
+            on="match_id",
+            how="left",
+        )
+
+    bat_stats = pd.DataFrame(columns=["player", "runs", "balls", "fours", "sixes", "strike_rate", "team"])
+    bowl_stats = pd.DataFrame(columns=["player", "wickets", "balls_bowled", "runs_conceded", "economy", "team"])
+    player_perf = pd.DataFrame()
+
     if not deliveries.empty:
-        top_bowl = (
-            deliveries.groupby("bowler", as_index=False)["is_wicket_int"]
-            .sum()
-            .sort_values("is_wicket_int", ascending=False)
-            .head(10)
+        bat_stats = (
+            deliveries.groupby("batsman", as_index=False)
+            .agg(
+                runs=("batsman_runs", "sum"),
+                balls=("batsman_runs", "count"),
+                fours=("batsman_runs", lambda s: int((s == 4).sum())),
+                sixes=("batsman_runs", lambda s: int((s == 6).sum())),
+            )
+            .rename(columns={"batsman": "player"})
         )
-        top_bowlers_data = [
-            {"player": str(row["bowler"]), "wickets": int(row["is_wicket_int"])}
-            for _, row in top_bowl.iterrows()
+        bat_stats["strike_rate"] = (bat_stats["runs"] * 100.0 / bat_stats["balls"].replace(0, 1)).round(2)
+        bat_team = (
+            deliveries.groupby("batsman")["batting_team"]
+            .agg(dominant_team)
+            .reset_index()
+            .rename(columns={"batsman": "player", "batting_team": "team"})
+        )
+        bat_stats = bat_stats.merge(bat_team, on="player", how="left")
+
+        bowl_stats = (
+            deliveries.groupby("bowler", as_index=False)
+            .agg(
+                wickets=("is_wicket_int", "sum"),
+                balls_bowled=("total_runs", "count"),
+                runs_conceded=("total_runs", "sum"),
+            )
+            .rename(columns={"bowler": "player"})
+        )
+        bowl_stats["economy"] = (bowl_stats["runs_conceded"] * 6.0 / bowl_stats["balls_bowled"].replace(0, 1)).round(2)
+        bowl_team = (
+            deliveries.groupby("bowler")["bowling_team"]
+            .agg(dominant_team)
+            .reset_index()
+            .rename(columns={"bowler": "player", "bowling_team": "team"})
+        )
+        bowl_stats = bowl_stats.merge(bowl_team, on="player", how="left")
+
+        player_perf = bat_stats.merge(bowl_stats, on="player", how="outer", suffixes=("_bat", "_bowl"))
+        player_perf["team"] = player_perf.get("team_bat", pd.Series(index=player_perf.index)).fillna(
+            player_perf.get("team_bowl", pd.Series(index=player_perf.index))
+        ).fillna("")
+
+        for col in ["runs", "balls", "fours", "sixes", "strike_rate", "wickets", "balls_bowled", "runs_conceded", "economy"]:
+            if col not in player_perf.columns:
+                player_perf[col] = 0
+            player_perf[col] = as_numeric(player_perf[col], 0)
+
+        player_perf["impact"] = (
+            (player_perf["runs"] * 0.28)
+            + (player_perf["wickets"] * 17.0)
+            + (player_perf["strike_rate"] * 0.08)
+            - (player_perf["economy"] * 2.4)
+        ).round(2)
+
+    nrr_by_team: dict[str, float] = {}
+    if not deliveries.empty:
+        runs_for = (
+            deliveries.groupby("batting_team", as_index=False)
+            .agg(runs_for=("total_runs", "sum"), balls_for=("total_runs", "count"))
+            .rename(columns={"batting_team": "team"})
+        )
+        runs_against = (
+            deliveries.groupby("bowling_team", as_index=False)
+            .agg(runs_against=("total_runs", "sum"), balls_against=("total_runs", "count"))
+            .rename(columns={"bowling_team": "team"})
+        )
+        nrr_table = runs_for.merge(runs_against, on="team", how="outer").fillna(0)
+        nrr_table["for_rr"] = (nrr_table["runs_for"] * 6.0) / nrr_table["balls_for"].replace(0, 1)
+        nrr_table["against_rr"] = (nrr_table["runs_against"] * 6.0) / nrr_table["balls_against"].replace(0, 1)
+        nrr_table["nrr"] = nrr_table["for_rr"] - nrr_table["against_rr"]
+        nrr_by_team = {
+            str(row["team"]): round(float(row["nrr"]), 3)
+            for _, row in nrr_table.iterrows()
+            if str(row["team"]).strip()
+        }
+
+    team_metrics_rows: list[dict[str, Any]] = []
+    team_breakdown: list[dict[str, Any]] = []
+
+    for team in team_options:
+        team_matches = match_core[
+            (match_core["team1"] == team) | (match_core["team2"] == team)
+        ].copy()
+        if team_matches.empty:
+            continue
+
+        team_matches = team_matches.sort_values(["match_date", "match_id"], kind="stable")
+        matches_played = int(len(team_matches))
+        wins = int((team_matches["winner"] == team).sum())
+        losses = max(matches_played - wins, 0)
+        win_pct = round((wins / max(matches_played, 1)) * 100, 1)
+
+        team_innings = innings_totals[innings_totals["batting_team"] == team].copy()
+        avg_score = float(team_innings["total_runs"].mean()) if not team_innings.empty else 0.0
+        best_score = int(team_innings["total_runs"].max()) if not team_innings.empty else 0
+
+        defended_low = 0
+        highest_chase = 0
+        if not innings_enriched.empty:
+            team_enriched = innings_enriched[innings_enriched["batting_team"] == team].copy()
+            defended = team_enriched[
+                (team_enriched["winner"] == team)
+                & (team_enriched["batting_team"] == team_enriched["bat_first_team"])
+            ]
+            chased = team_enriched[
+                (team_enriched["winner"] == team)
+                & (team_enriched["batting_team"] != team_enriched["bat_first_team"])
+            ]
+            if not defended.empty:
+                defended_low = int(defended["total_runs"].min())
+            if not chased.empty:
+                highest_chase = int(chased["total_runs"].max())
+
+        defend_matches = team_matches[team_matches["bat_first_team"] == team]
+        chase_matches = team_matches[team_matches["bat_first_team"] != team]
+        defend_win_pct = round(
+            ((defend_matches["winner"] == team).mean() * 100) if not defend_matches.empty else 0.0,
+            1,
+        )
+        chase_win_pct = round(
+            ((chase_matches["winner"] == team).mean() * 100) if not chase_matches.empty else 0.0,
+            1,
+        )
+
+        close_wins = team_matches[
+            (team_matches["winner"] == team)
+            & (
+                ((team_matches["win_by_runs"] > 0) & (team_matches["win_by_runs"] <= 15))
+                | ((team_matches["win_by_wickets"] > 0) & (team_matches["win_by_wickets"] <= 4))
+            )
         ]
+        close_win_pct = round((len(close_wins) / max(wins, 1)) * 100, 1)
 
-    venue_matches_data: list[dict[str, Any]] = []
-    venue_win_style_data: list[dict[str, Any]] = []
-    toss_impact_data: list[dict[str, Any]] = []
-    match_competitiveness_data: list[dict[str, Any]] = []
+        nrr = float(nrr_by_team.get(team, 0.0))
+        captaincy_index = round(
+            (win_pct * 0.56)
+            + (nrr * 11.5)
+            + (defend_win_pct * 0.14)
+            + (chase_win_pct * 0.14)
+            + (close_win_pct * 0.16),
+            2,
+        )
 
-    if not matches.empty:
-        venue_counts = matches.groupby("venue", as_index=False).size().rename(columns={"size": "matches"})
-        venue_counts = venue_counts.sort_values("matches", ascending=False).head(10)
-        venue_matches_data = [
-            {"venue": str(row["venue"]), "matches": int(row["matches"])}
-            for _, row in venue_counts.iterrows()
-        ]
-
-        temp = matches.copy()
-        temp["bat_first_team"] = temp.apply(batting_first_team, axis=1)
-        temp["win_style"] = temp.apply(
-            lambda row: "Bat First Win" if str(row["winner"]) == str(row["bat_first_team"]) else "Chasing Win",
+        team_scores = team_innings[["match_id", "total_runs"]].rename(columns={"total_runs": "team_score"})
+        history = team_matches.merge(team_scores, on="match_id", how="left")
+        history["team_score"] = as_numeric(history.get("team_score", pd.Series(index=history.index)), 0).astype(int)
+        history["opponent"] = history.apply(
+            lambda row: row["team2"] if str(row["team1"]) == team else row["team1"],
             axis=1,
         )
-        grouped = (
-            temp.groupby(["venue", "win_style"], as_index=False)
-            .size()
-            .rename(columns={"size": "count"})
-        )
-        top_venue_names = venue_counts["venue"].tolist()
-        grouped = grouped[grouped["venue"].isin(top_venue_names)]
-        pivot = grouped.pivot_table(index="venue", columns="win_style", values="count", fill_value=0).reset_index()
+        history["result"] = (history["winner"] == team).astype(int)
+        history["match_index"] = range(1, len(history) + 1)
+        history["cum_wins"] = history["result"].cumsum()
+        history["cumulative_win_pct"] = (history["cum_wins"] / history["match_index"].replace(0, 1) * 100).round(1)
+        history["match_label"] = history["opponent"].apply(lambda opponent: f"vs {opponent}")
 
-        for _, row in pivot.iterrows():
-            venue_win_style_data.append(
+        trend_rows = [
+            {
+                "matchIndex": int(row["match_index"]),
+                "matchLabel": str(row["match_label"]),
+                "teamScore": int(row["team_score"]),
+                "cumulativeWinPct": float(row["cumulative_win_pct"]),
+                "result": "W" if int(row["result"]) == 1 else "L",
+            }
+            for _, row in history.tail(16).iterrows()
+        ]
+
+        team_h2h = (
+            history.groupby("opponent", as_index=False)
+            .agg(matches=("match_id", "count"), wins=("result", "sum"))
+            .sort_values(["matches", "wins"], ascending=[False, False], kind="stable")
+        )
+        team_h2h["winPct"] = (team_h2h["wins"] / team_h2h["matches"].replace(0, 1) * 100).round(1)
+        team_h2h_rows = [
+            {
+                "opponent": str(row["opponent"]),
+                "matches": int(row["matches"]),
+                "wins": int(row["wins"]),
+                "winPct": float(row["winPct"]),
+            }
+            for _, row in team_h2h.head(6).iterrows()
+        ]
+
+        team_players_rows: list[dict[str, Any]] = []
+        if not player_perf.empty:
+            team_players = player_perf[player_perf["team"].astype(str) == team].copy()
+            team_players = team_players.sort_values("impact", ascending=False, kind="stable").head(8)
+            team_players_rows = [
                 {
-                    "venue": str(row["venue"]),
-                    "batFirstWins": int(row.get("Bat First Win", 0)),
-                    "chasingWins": int(row.get("Chasing Win", 0)),
+                    "player": str(row["player"]),
+                    "runs": int(row["runs"]),
+                    "wickets": int(row["wickets"]),
+                    "strikeRate": round(float(row["strike_rate"]), 2),
+                    "economy": round(float(row["economy"]), 2),
+                    "impact": round(float(row["impact"]), 2),
+                }
+                for _, row in team_players.iterrows()
+            ]
+
+        team_metrics_rows.append(
+            {
+                "team": team,
+                "matches": matches_played,
+                "wins": wins,
+                "losses": losses,
+                "winPct": win_pct,
+                "nrr": round(nrr, 2),
+                "avgScore": round(avg_score, 1),
+                "bestScore": best_score,
+                "lowestDefended": defended_low,
+                "highestChase": highest_chase,
+                "captaincyIndex": captaincy_index,
+                "defendWinPct": defend_win_pct,
+                "chaseWinPct": chase_win_pct,
+            }
+        )
+
+        team_breakdown.append(
+            {
+                "team": team,
+                "summary": {
+                    "matches": matches_played,
+                    "wins": wins,
+                    "losses": losses,
+                    "winPct": win_pct,
+                    "nrr": round(nrr, 2),
+                    "avgScore": round(avg_score, 1),
+                    "bestScore": best_score,
+                    "lowestDefended": defended_low,
+                    "highestChase": highest_chase,
+                    "defendWinPct": defend_win_pct,
+                    "chaseWinPct": chase_win_pct,
+                },
+                "trend": trend_rows,
+                "keyInsights": [
+                    {"title": "Overall Record", "value": f"{wins}-{losses} ({win_pct}%)"},
+                    {"title": "Net Run Rate", "value": f"{round(nrr, 2)}"},
+                    {"title": "Defend vs Chase", "value": f"{defend_win_pct}% vs {chase_win_pct}%"},
+                    {
+                        "title": "Lowest Defended",
+                        "value": str(defended_low) if defended_low > 0 else "N/A",
+                    },
+                    {
+                        "title": "Highest Successful Chase",
+                        "value": str(highest_chase) if highest_chase > 0 else "N/A",
+                    },
+                ],
+                "records": [
+                    {"metric": "Best Team Score", "value": best_score},
+                    {"metric": "Average Team Score", "value": round(avg_score, 1)},
+                    {"metric": "Defend Success %", "value": defend_win_pct},
+                    {"metric": "Chase Success %", "value": chase_win_pct},
+                ],
+                "topPlayers": team_players_rows,
+                "headToHead": team_h2h_rows,
+            }
+        )
+
+    team_metrics_df = pd.DataFrame(team_metrics_rows)
+
+    top_teams_data: list[dict[str, Any]] = []
+    best_captaincy_data: list[dict[str, Any]] = []
+    if not team_metrics_df.empty:
+        top_teams_df = team_metrics_df.sort_values(
+            ["winPct", "nrr", "avgScore"],
+            ascending=[False, False, False],
+            kind="stable",
+        ).head(7)
+        top_teams_data = [
+            {
+                "team": str(row["team"]),
+                "matches": int(row["matches"]),
+                "wins": int(row["wins"]),
+                "winPct": float(row["winPct"]),
+                "nrr": float(row["nrr"]),
+                "avgScore": float(row["avgScore"]),
+            }
+            for _, row in top_teams_df.iterrows()
+        ]
+
+        captaincy_df = team_metrics_df.sort_values(
+            ["captaincyIndex", "winPct"],
+            ascending=[False, False],
+            kind="stable",
+        ).head(7)
+        best_captaincy_data = [
+            {
+                "team": str(row["team"]),
+                "captaincyIndex": float(row["captaincyIndex"]),
+                "winPct": float(row["winPct"]),
+                "defendWinPct": float(row["defendWinPct"]),
+                "chaseWinPct": float(row["chaseWinPct"]),
+                "matches": int(row["matches"]),
+            }
+            for _, row in captaincy_df.iterrows()
+        ]
+
+    top_performing_players: list[dict[str, Any]] = []
+    top_batsmen_data: list[dict[str, Any]] = []
+    top_bowlers_data: list[dict[str, Any]] = []
+
+    if not player_perf.empty:
+        top_perf_df = player_perf.sort_values("impact", ascending=False, kind="stable").head(10)
+        top_performing_players = [
+            {
+                "player": str(row["player"]),
+                "team": str(row["team"]),
+                "runs": int(row["runs"]),
+                "wickets": int(row["wickets"]),
+                "strikeRate": round(float(row["strike_rate"]), 2),
+                "economy": round(float(row["economy"]), 2),
+                "impact": round(float(row["impact"]), 2),
+            }
+            for _, row in top_perf_df.iterrows()
+        ]
+
+    if not bat_stats.empty:
+        bat_df = bat_stats.sort_values(["runs", "strike_rate"], ascending=[False, False], kind="stable").head(8)
+        top_batsmen_data = [
+            {
+                "player": str(row["player"]),
+                "team": str(row.get("team", "")),
+                "runs": int(row["runs"]),
+                "strikeRate": round(float(row["strike_rate"]), 2),
+                "balls": int(row["balls"]),
+            }
+            for _, row in bat_df.iterrows()
+        ]
+
+    if not bowl_stats.empty:
+        bowl_df = bowl_stats.copy()
+        bowl_df = bowl_df[bowl_df["balls_bowled"] >= 30] if (bowl_df["balls_bowled"] >= 30).any() else bowl_df
+        bowl_df = bowl_df.sort_values(["wickets", "economy"], ascending=[False, True], kind="stable").head(8)
+        top_bowlers_data = [
+            {
+                "player": str(row["player"]),
+                "team": str(row.get("team", "")),
+                "wickets": int(row["wickets"]),
+                "economy": round(float(row["economy"]), 2),
+                "balls": int(row["balls_bowled"]),
+            }
+            for _, row in bowl_df.iterrows()
+        ]
+
+    key_records_data: list[dict[str, Any]] = []
+    highest_team_score = int(innings_totals["total_runs"].max()) if not innings_totals.empty else 0
+    lowest_defended = 0
+    if not innings_enriched.empty:
+        defended = innings_enriched[
+            (innings_enriched["batting_team"] == innings_enriched["winner"])
+            & (innings_enriched["batting_team"] == innings_enriched["bat_first_team"])
+        ]
+        if not defended.empty:
+            lowest_defended = int(defended["total_runs"].min())
+
+    highest_individual = 0
+    if not deliveries.empty:
+        individual = (
+            deliveries.groupby(["match_id", "batsman"], as_index=False)["batsman_runs"]
+            .sum()
+            .sort_values("batsman_runs", ascending=False, kind="stable")
+        )
+        if not individual.empty:
+            highest_individual = int(individual.iloc[0]["batsman_runs"])
+
+    best_bowling_fig = "N/A"
+    if not deliveries.empty:
+        figures = (
+            deliveries.groupby(["match_id", "bowler"], as_index=False)
+            .agg(wickets=("is_wicket_int", "sum"), runs=("total_runs", "sum"))
+            .sort_values(["wickets", "runs"], ascending=[False, True], kind="stable")
+        )
+        if not figures.empty:
+            row = figures.iloc[0]
+            best_bowling_fig = f"{int(row['wickets'])}/{int(row['runs'])} by {row['bowler']}"
+
+    key_records_data = [
+        {
+            "title": "Highest Team Score",
+            "value": highest_team_score,
+            "context": "Best innings total recorded",
+        },
+        {
+            "title": "Lowest Defended Score",
+            "value": int(lowest_defended) if lowest_defended > 0 else "N/A",
+            "context": "Lowest winning total while defending",
+        },
+        {
+            "title": "Highest Individual Score",
+            "value": highest_individual,
+            "context": "Highest score by a batter in one match",
+        },
+        {
+            "title": "Best Bowling Figures",
+            "value": best_bowling_fig,
+            "context": "Top wicket haul in a single match",
+        },
+    ]
+
+    head_to_head_data: list[dict[str, Any]] = []
+    if not match_core.empty:
+        h2h_map: dict[str, dict[str, Any]] = {}
+        ordered_matches = match_core.sort_values(["match_date", "match_id"], kind="stable")
+        for _, row in ordered_matches.iterrows():
+            team_a, team_b = canonical_team_pair(str(row["team1"]), str(row["team2"]))
+            if not team_a or not team_b:
+                continue
+
+            key = f"{team_a}::{team_b}"
+            if key not in h2h_map:
+                h2h_map[key] = {
+                    "teamA": team_a,
+                    "teamB": team_b,
+                    "matches": 0,
+                    "winsA": 0,
+                    "winsB": 0,
+                    "lastWinner": "",
+                }
+
+            h2h_map[key]["matches"] += 1
+            winner = str(row["winner"])
+            if winner == team_a:
+                h2h_map[key]["winsA"] += 1
+            elif winner == team_b:
+                h2h_map[key]["winsB"] += 1
+            h2h_map[key]["lastWinner"] = winner
+
+        head_to_head_data = [
+            {
+                "pair": f"{value['teamA']} vs {value['teamB']}",
+                "teamA": value["teamA"],
+                "teamB": value["teamB"],
+                "matches": int(value["matches"]),
+                "winsA": int(value["winsA"]),
+                "winsB": int(value["winsB"]),
+                "lastWinner": value["lastWinner"],
+            }
+            for value in h2h_map.values()
+        ]
+        head_to_head_data = sorted(head_to_head_data, key=lambda item: item["matches"], reverse=True)[:10]
+
+    hyped_matches_data: list[dict[str, Any]] = []
+    if not match_core.empty:
+        for _, row in match_core.iterrows():
+            runs_margin = int(row.get("win_by_runs", 0) or 0)
+            wickets_margin = int(row.get("win_by_wickets", 0) or 0)
+            winner = str(row.get("winner", ""))
+
+            if runs_margin > 0:
+                margin_text = f"{winner} won by {runs_margin} runs"
+                closeness = max(0, 35 - runs_margin) * 2.1
+            elif wickets_margin > 0:
+                margin_text = f"{winner} won by {wickets_margin} wickets"
+                closeness = max(0, 10 - wickets_margin) * 6.2
+            else:
+                margin_text = f"Winner: {winner or 'N/A'}"
+                closeness = 8.0
+
+            stage_blob = f"{row.get('stage', '')} {row.get('tournament_phase', '')}".lower()
+            stage_boost = 12.0 if "final" in stage_blob else 7.0 if "semi" in stage_blob else 0.0
+            scoring_boost = float(row.get("match_total_runs", 0.0) or 0.0) / 8.0
+            hype_score = round(closeness + scoring_boost + stage_boost, 1)
+
+            hyped_matches_data.append(
+                {
+                    "matchId": str(row["match_id"]),
+                    "fixture": f"{row['team1']} vs {row['team2']}",
+                    "winner": winner,
+                    "margin": margin_text,
+                    "totalRuns": int(row.get("match_total_runs", 0) or 0),
+                    "hypeScore": hype_score,
+                    "venue": str(row.get("venue_canonical") or row.get("venue") or "Unknown Venue"),
                 }
             )
 
-        toss_df = matches.copy()
-        toss_df["toss_helped"] = (toss_df["toss_winner"] == toss_df["winner"]).astype(int)
-        toss_summary = (
-            toss_df.groupby("toss_decision", as_index=False)
-            .agg(winPct=("toss_helped", "mean"), matches=("match_id", "count"))
-            .sort_values("matches", ascending=False)
+        hyped_matches_data = sorted(
+            hyped_matches_data,
+            key=lambda item: (item["hypeScore"], item["totalRuns"]),
+            reverse=True,
+        )[:8]
+
+    key_insights_data: list[dict[str, Any]] = []
+    if top_teams_data:
+        leader = top_teams_data[0]
+        key_insights_data.append(
+            {
+                "title": "Top Team Throughout",
+                "detail": f"{leader['team']} leads with {leader['wins']} wins in {leader['matches']} matches ({leader['winPct']}% win rate).",
+            }
         )
-        toss_summary["winPct"] = toss_summary["winPct"] * 100
-        toss_impact_data = [
+
+    if top_batsmen_data:
+        batter = top_batsmen_data[0]
+        key_insights_data.append(
             {
-                "decision": str(row["toss_decision"]).capitalize(),
-                "winPct": round(float(row["winPct"]), 1),
-                "matches": int(row["matches"]),
+                "title": "Top Batter/Woman",
+                "detail": f"{batter['player']} ({batter.get('team', 'N/A')}) has scored {batter['runs']} runs at {batter['strikeRate']} SR.",
             }
-            for _, row in toss_summary.iterrows()
-        ]
+        )
 
-        run_margin = as_numeric(matches["win_by_runs"], 0).astype(int)
-        wkt_margin = as_numeric(matches["win_by_wickets"], 0).astype(int)
-
-        buckets = {"Close": 0, "Competitive": 0, "Dominant": 0}
-        for runs, wkts in zip(run_margin.tolist(), wkt_margin.tolist()):
-            if runs <= 0 and wkts <= 0:
-                continue
-            if (0 < runs <= 10) or (0 < wkts <= 3):
-                buckets["Close"] += 1
-            elif (10 < runs <= 35) or (3 < wkts <= 6):
-                buckets["Competitive"] += 1
-            else:
-                buckets["Dominant"] += 1
-
-        match_competitiveness_data = [
-            {"bucket": key, "matches": int(val)} for key, val in buckets.items()
-        ]
-
-    powerplay_leaders_data: list[dict[str, Any]] = []
-    death_bowling_leaders_data: list[dict[str, Any]] = []
-
-    if not deliveries.empty:
-        pp = deliveries[deliveries["over_num"] <= 5]
-        if not pp.empty:
-            pp_stats = (
-                pp.groupby("batting_team", as_index=False)
-                .agg(runs=("total_runs", "sum"), balls=("total_runs", "count"))
-            )
-            pp_stats["runRate"] = (pp_stats["runs"] / pp_stats["balls"].replace(0, 1)) * 6
-            pp_stats = pp_stats.sort_values("runRate", ascending=False).head(10)
-            powerplay_leaders_data = [
-                {"team": str(row["batting_team"]), "runRate": round(float(row["runRate"]), 2)}
-                for _, row in pp_stats.iterrows()
-            ]
-
-        death = deliveries[deliveries["over_num"] >= 16]
-        if not death.empty:
-            death_stats = (
-                death.groupby("bowling_team", as_index=False)
-                .agg(runs=("total_runs", "sum"), balls=("total_runs", "count"), wickets=("is_wicket_int", "sum"))
-            )
-            death_stats = death_stats[death_stats["balls"] >= 60]
-            if not death_stats.empty:
-                death_stats["economy"] = (death_stats["runs"] / death_stats["balls"].replace(0, 1)) * 6
-                death_stats = death_stats.sort_values("economy", ascending=True).head(10)
-                death_bowling_leaders_data = [
-                    {
-                        "team": str(row["bowling_team"]),
-                        "economy": round(float(row["economy"]), 2),
-                        "wickets": int(row["wickets"]),
-                    }
-                    for _, row in death_stats.iterrows()
-                ]
-
-    player_archetypes_data: list[dict[str, Any]] = []
-    if not players.empty:
-        sample = players[(players["runs"] > 100) & (players["strike_rate"] > 0) & (players["batting_avg"] > 0)].copy()
-        sample = sample.sort_values("runs", ascending=False).head(120)
-        player_archetypes_data = [
+    if top_bowlers_data:
+        bowler = top_bowlers_data[0]
+        key_insights_data.append(
             {
-                "name": str(row["player_name"]),
-                "average": round(float(row["batting_avg"]), 2),
-                "strikeRate": round(float(row["strike_rate"]), 2),
-                "runs": int(row["runs"]),
-                "type": str(row.get("role", "Unknown")),
+                "title": "Top Bowler",
+                "detail": f"{bowler['player']} has {bowler['wickets']} wickets with {bowler['economy']} economy.",
             }
-            for _, row in sample.iterrows()
-        ]
+        )
+
+    if head_to_head_data:
+        rivalry = head_to_head_data[0]
+        key_insights_data.append(
+            {
+                "title": "Most Active Rivalry",
+                "detail": f"{rivalry['pair']} has met {rivalry['matches']} times (latest winner: {rivalry['lastWinner'] or 'N/A'}).",
+            }
+        )
+
+    ai_insight_cards: list[dict[str, Any]] = []
+    if top_teams_data:
+        leader = top_teams_data[0]
+        ai_insight_cards.append(
+            {
+                "title": "AI Power Rank #1",
+                "value": leader["team"],
+                "detail": f"Win% {leader['winPct']} | NRR {leader['nrr']} | Avg score {leader['avgScore']}",
+            }
+        )
+
+    if best_captaincy_data:
+        cap = best_captaincy_data[0]
+        ai_insight_cards.append(
+            {
+                "title": "Best Captaincy Proxy",
+                "value": cap["team"],
+                "detail": f"Captaincy index {cap['captaincyIndex']} from win conversion, pressure wins, defend/chase split.",
+            }
+        )
+
+    if hyped_matches_data:
+        hype = hyped_matches_data[0]
+        ai_insight_cards.append(
+            {
+                "title": "Most Hyped Match",
+                "value": hype["fixture"],
+                "detail": f"Hype score {hype['hypeScore']} | {hype['margin']} | Total runs {hype['totalRuns']}",
+            }
+        )
+
+    if top_performing_players:
+        top_player = top_performing_players[0]
+        ai_insight_cards.append(
+            {
+                "title": "Top Performing Player",
+                "value": top_player["player"],
+                "detail": f"Impact {top_player['impact']} | Runs {top_player['runs']} | Wickets {top_player['wickets']}",
+            }
+        )
+
+    team_breakdown = sorted(
+        team_breakdown,
+        key=lambda entry: (
+            float(entry.get("summary", {}).get("winPct", 0.0)),
+            float(entry.get("summary", {}).get("nrr", 0.0)),
+        ),
+        reverse=True,
+    )
 
     payload = {
-        "evolutionData": evolution_data,
+        "topPerformingTeamsData": top_teams_data,
+        "topPerformingPlayersData": top_performing_players,
         "topBatsmenData": top_batsmen_data,
         "topBowlersData": top_bowlers_data,
-        "venueMatchesData": venue_matches_data,
-        "venueWinStyleData": venue_win_style_data,
-        "tossImpactData": toss_impact_data,
-        "matchCompetitivenessData": match_competitiveness_data,
-        "powerplayLeadersData": powerplay_leaders_data,
-        "deathBowlingLeadersData": death_bowling_leaders_data,
-        "playerArchetypesData": player_archetypes_data,
+        "bestCaptaincyData": best_captaincy_data,
+        "keyRecordsData": key_records_data,
+        "keyInsightsData": key_insights_data,
+        "teamOptions": team_options,
+        "teamBreakdown": team_breakdown,
+        "headToHeadData": head_to_head_data,
+        "hypedMatchesData": hyped_matches_data,
+        "aiInsightCards": ai_insight_cards,
+        "matchCompetitivenessData": [],
+        "playerArchetypesData": [],
+        "deathBowlingLeadersData": [],
+        "powerplayLeadersData": [],
+        "tossImpactData": [],
     }
     return set_cached_response(cache_key, payload)
 
@@ -1668,18 +3318,16 @@ def commentator_meta() -> dict[str, Any]:
         }
     )
 
-    venues = sorted({str(v) for v in matches.get("venue", pd.Series()).dropna().astype(str).tolist() if str(v).strip()})
-    if "Neutral Venue" not in venues:
-        venues.append("Neutral Venue")
+    venues = list_unique_venues(matches)
 
     ordered = matches.sort_values(["match_date", "match_id"], ascending=[False, False], kind="stable")
     options = [
         {
             "matchId": str(row["match_id"]),
-            "label": f"{row['team1']} vs {row['team2']} | {row['venue']}",
+            "label": f"{row['team1']} vs {row['team2']} | {row.get('venue_canonical', row['venue'])}",
             "team1": str(row["team1"]),
             "team2": str(row["team2"]),
-            "venue": str(row["venue"]),
+            "venue": str(row.get("venue_canonical", row["venue"])),
             "winner": str(row["winner"]),
         }
         for _, row in ordered.head(400).iterrows()
@@ -1793,6 +3441,8 @@ def commentator_insights(
     venue: str = "Neutral Venue",
     match_id: str | None = None,
 ) -> dict[str, Any]:
+    team, opponent = canonical_team_pair(team, opponent)
+
     matches = load_matches_frame()
     deliveries = load_deliveries_frame()
     players = load_players_frame()
@@ -1924,9 +3574,7 @@ def analyst_meta() -> dict[str, Any]:
         }
     )
 
-    venues = sorted({str(v) for v in matches.get("venue", pd.Series()).dropna().astype(str).tolist() if str(v).strip()})
-    if "Neutral Venue" not in venues:
-        venues.append("Neutral Venue")
+    venues = list_unique_venues(matches)
 
     return {"teams": teams, "venues": venues}
 
@@ -1934,20 +3582,65 @@ def analyst_meta() -> dict[str, Any]:
 @app.post("/analyst/win-probability")
 def analyst_win_probability(req: AnalystWinRequest) -> dict[str, Any]:
     selected_gender = normalize_gender_value(req.gender or get_request_gender(), default=normalize_gender_value(DEFAULT_GENDER, "male"))
+
+    team_a, team_b = canonical_team_pair(req.team_a, req.team_b)
+    toss_winner = req.toss_winner if req.toss_winner in {team_a, team_b} else team_a
+
     matches = load_matches_frame(selected_gender)
-    deliveries = load_deliveries_frame(selected_gender, matches=matches)
-    model_payload = build_match_prediction_payload(
+    analysis_matches = apply_analyst_match_filters(
         matches=matches,
+        team=team_a,
+        opponent=team_b,
+        venue=req.venue,
+        use_venue_filter=bool(req.use_venue_filter),
+        use_toss_filter=bool(req.use_toss_filter),
+        toss_result_filter=req.toss_result_filter,
+        toss_decision_filter=req.toss_decision_filter,
+    )
+    pair_matches = apply_analyst_match_filters(
+        matches=matches,
+        team=team_a,
+        opponent=team_b,
+        venue="Neutral Venue",
+        use_venue_filter=False,
+        use_toss_filter=False,
+        toss_result_filter="all",
+        toss_decision_filter="any",
+    )
+
+    effective_matches = analysis_matches if not analysis_matches.empty else pair_matches
+    fallback_used = analysis_matches.empty and not effective_matches.empty
+
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
+    if not effective_matches.empty:
+        match_ids = set(effective_matches["match_id"].astype(str).tolist())
+        deliveries = deliveries[deliveries["match_id"].astype(str).isin(match_ids)].copy()
+    else:
+        deliveries = deliveries.iloc[0:0].copy()
+
+    venue_value = req.venue if (req.use_venue_filter and not fallback_used) else "Neutral Venue"
+    model_payload = build_match_prediction_payload(
+        matches=effective_matches,
         deliveries=deliveries,
-        team_a=req.team_a,
-        team_b=req.team_b,
-        toss_winner=req.toss_winner,
+        team_a=team_a,
+        team_b=team_b,
+        toss_winner=toss_winner,
         toss_decision=req.toss_decision,
         is_knockout=req.is_knockout,
-        venue=req.venue,
+        venue=venue_value,
         gender=selected_gender,
     )
-    return build_analyst_win_probability_payload(model_payload)
+    payload = build_analyst_win_probability_payload(model_payload)
+    payload["filtersApplied"] = {
+        "useVenueFilter": bool(req.use_venue_filter),
+        "useTossFilter": bool(req.use_toss_filter),
+        "tossResultFilter": normalize_toss_result_filter(req.toss_result_filter),
+        "tossDecisionFilter": normalize_toss_decision_filter(req.toss_decision_filter),
+        "sampledMatches": int(len(analysis_matches)),
+        "effectiveSampledMatches": int(len(effective_matches)),
+        "fallbackUsed": bool(fallback_used),
+    }
+    return payload
 
 
 @app.get("/analyst/insights")
@@ -1957,40 +3650,69 @@ def analyst_insights(
     venue: str = "Neutral Venue",
     toss_winner: str | None = None,
     toss_decision: str = "bat",
+    use_venue_filter: bool = False,
+    use_toss_filter: bool = False,
+    toss_result_filter: str = "all",
+    toss_decision_filter: str = "any",
 ) -> dict[str, Any]:
-    matches = load_matches_frame()
-    deliveries = load_deliveries_frame()
+    selected_gender = get_request_gender()
+    team, opponent = canonical_team_pair(team, opponent)
+
+    matches = load_matches_frame(selected_gender)
+    analysis_matches = apply_analyst_match_filters(
+        matches=matches,
+        team=team,
+        opponent=opponent,
+        venue=venue,
+        use_venue_filter=bool(use_venue_filter),
+        use_toss_filter=bool(use_toss_filter),
+        toss_result_filter=toss_result_filter,
+        toss_decision_filter=toss_decision_filter,
+    )
+    pair_matches = apply_analyst_match_filters(
+        matches=matches,
+        team=team,
+        opponent=opponent,
+        venue="Neutral Venue",
+        use_venue_filter=False,
+        use_toss_filter=False,
+        toss_result_filter="all",
+        toss_decision_filter="any",
+    )
+
+    effective_matches = analysis_matches if not analysis_matches.empty else pair_matches
+    fallback_used = analysis_matches.empty and not effective_matches.empty
+
+    deliveries = load_deliveries_frame(selected_gender, matches=matches)
+    if not effective_matches.empty:
+        allowed_ids = set(effective_matches["match_id"].astype(str).tolist())
+        deliveries = deliveries[deliveries["match_id"].astype(str).isin(allowed_ids)].copy()
+    else:
+        deliveries = deliveries.iloc[0:0].copy()
 
     # Expected first-innings score at venue for selected team.
     innings = build_first_innings_dataset(deliveries)
-    venue_matches = filter_matches_by_venue(matches, venue)
-    venue_ids = set(venue_matches["match_id"].astype(str).tolist()) if not venue_matches.empty else set()
-
-    expected_pool = innings[(innings["batting_team"] == team) & (innings["inning"] == 1)]
-    if venue_ids:
-        venue_specific = expected_pool[expected_pool["match_id"].astype(str).isin(venue_ids)]
-        if len(venue_specific) >= 4:
-            expected_pool = venue_specific
+    if innings.empty or not {"batting_team", "inning", "total_runs"}.issubset(innings.columns):
+        expected_pool = pd.DataFrame(columns=["total_runs"])
+    else:
+        expected_pool = innings[(innings["batting_team"] == team) & (innings["inning"] == 1)]
 
     expected_score = float(expected_pool["total_runs"].mean()) if not expected_pool.empty else 0.0
     score_q25 = float(expected_pool["total_runs"].quantile(0.25)) if not expected_pool.empty else 0.0
     score_q75 = float(expected_pool["total_runs"].quantile(0.75)) if not expected_pool.empty else 0.0
 
     # Venue performance index.
-    team_venue_matches = team_match_subset(venue_matches, team)
+    team_venue_matches = team_match_subset(effective_matches, team)
     venue_win_pct = float((team_venue_matches["winner"] == team).mean() * 100) if not team_venue_matches.empty else 0.0
 
     # Head-to-head dominance.
-    h2h = matches[
-        ((matches["team1"] == team) & (matches["team2"] == opponent))
-        | ((matches["team1"] == opponent) & (matches["team2"] == team))
-    ]
+    h2h = effective_matches
     h2h_wins = int((h2h["winner"] == team).sum()) if not h2h.empty else 0
     h2h_total = int(len(h2h))
     h2h_ratio = round((h2h_wins / h2h_total) * 100, 1) if h2h_total > 0 else 50.0
 
     # Toss impact analysis for selected team.
-    team_matches = team_match_subset(matches, team)
+    team_matches = team_match_subset(effective_matches, team)
     bat_first_wins = 0
     bat_first_total = 0
     chase_wins = 0
@@ -2021,22 +3743,25 @@ def analyst_insights(
     opp_batting_vs_team_bowling = round(opp_bat_idx - team_bowl_idx, 2)
 
     # Upset probability indicator based on points table rank.
-    points = build_points_table(matches)
+    points = build_points_table(effective_matches)
     rank_team = int(points[points["Team"] == team]["Rank"].iloc[0]) if team in points["Team"].values else 999
     rank_opp = int(points[points["Team"] == opponent]["Rank"].iloc[0]) if opponent in points["Team"].values else 999
 
     favourite = team if rank_team < rank_opp else opponent
     underdog = opponent if favourite == team else team
 
-    upset_prob = compute_upset_probability(
-        matches=matches,
-        deliveries=deliveries,
-        favourite_team=favourite,
-        underdog_team=underdog,
-        toss_winner=toss_winner or team,
-        toss_bat_first=1 if toss_decision == "bat" else 0,
-        is_knockout=0,
-    )
+    if effective_matches.empty or deliveries.empty:
+        upset_prob = 0.0
+    else:
+        upset_prob = compute_upset_probability(
+            matches=effective_matches,
+            deliveries=deliveries,
+            favourite_team=favourite,
+            underdog_team=underdog,
+            toss_winner=toss_winner or team,
+            toss_bat_first=1 if toss_decision == "bat" else 0,
+            is_knockout=0,
+        )
 
     # Phase-wise run scoring efficiency.
     def phase_run_rates(team_name: str) -> dict[str, float]:
@@ -2081,14 +3806,14 @@ def analyst_insights(
 
     # Match win probability derived from already loaded dataframes.
     prediction_payload = build_match_prediction_payload(
-        matches=matches,
+        matches=effective_matches,
         deliveries=deliveries,
         team_a=team,
         team_b=opponent,
         toss_winner=toss_winner or team,
         toss_decision=toss_decision,
         is_knockout=0,
-        venue=venue,
+        venue=venue if (use_venue_filter and not fallback_used) else "Neutral Venue",
     )
     win_prob = build_analyst_win_probability_payload(prediction_payload)
 
@@ -2102,7 +3827,7 @@ def analyst_insights(
         },
         "venuePerformanceIndex": {
             "team": team,
-            "venue": normalize_venue_name(venue) or "All venues",
+            "venue": normalize_venue_name(venue) if (use_venue_filter and not fallback_used) else "All venues",
             "winPct": round(venue_win_pct, 1),
             "matches": int(len(team_venue_matches)),
         },
@@ -2142,6 +3867,15 @@ def analyst_insights(
         "qualificationProbability": {
             "team": team,
             "probabilityPct": round(qualification_pct, 1),
+        },
+        "filtersApplied": {
+            "useVenueFilter": bool(use_venue_filter),
+            "useTossFilter": bool(use_toss_filter),
+            "tossResultFilter": normalize_toss_result_filter(toss_result_filter),
+            "tossDecisionFilter": normalize_toss_decision_filter(toss_decision_filter),
+            "sampledMatches": int(len(analysis_matches)),
+            "effectiveSampledMatches": int(len(effective_matches)),
+            "fallbackUsed": bool(fallback_used),
         },
     }
 

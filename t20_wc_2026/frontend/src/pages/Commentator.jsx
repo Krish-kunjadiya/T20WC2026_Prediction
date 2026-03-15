@@ -12,6 +12,7 @@ import {
   YAxis,
 } from 'recharts';
 import api from '../api';
+import { useMatchup } from '../context/MatchupContext';
 
 const defaultOverview = {
   topRunScorers: [],
@@ -41,13 +42,19 @@ const defaultInsights = {
 };
 
 const Commentator = () => {
+  const {
+    teams,
+    selectedTeam,
+    selectedOpponent,
+    setSelectedTeam,
+    setSelectedOpponent,
+    loading: matchupLoading,
+  } = useMatchup();
   const [meta, setMeta] = useState({ teams: [], venues: [], matches: [] });
   const [overview, setOverview] = useState(defaultOverview);
   const [liveFeed, setLiveFeed] = useState({ available: false, events: [] });
   const [insights, setInsights] = useState(defaultInsights);
 
-  const [team, setTeam] = useState('');
-  const [opponent, setOpponent] = useState('');
   const [venue, setVenue] = useState('Neutral Venue');
   const [matchId, setMatchId] = useState('');
 
@@ -68,14 +75,9 @@ const Commentator = () => {
         setOverview(overviewRes.data || defaultOverview);
         setLiveFeed(liveRes.data || { available: false, events: [] });
 
-        const teams = loadedMeta.teams || [];
         const venues = loadedMeta.venues || [];
         const matches = loadedMeta.matches || [];
 
-        if (teams.length >= 2) {
-          setTeam(teams[0]);
-          setOpponent(teams[1]);
-        }
         if (venues.length > 0) {
           setVenue(venues[0]);
         }
@@ -90,7 +92,32 @@ const Commentator = () => {
     loadBase();
   }, []);
 
-  const canGetInsights = team && opponent && team !== opponent;
+  useEffect(() => {
+    const matches = meta.matches || [];
+    if (!selectedTeam || !selectedOpponent || !matches.length) {
+      return;
+    }
+
+    const currentMatch = matches.find((m) => m.matchId === matchId);
+    const currentFitsPair =
+      currentMatch
+      && [currentMatch.team1, currentMatch.team2].includes(selectedTeam)
+      && [currentMatch.team1, currentMatch.team2].includes(selectedOpponent);
+
+    if (currentFitsPair) {
+      return;
+    }
+
+    const preferredMatch = matches.find(
+      (m) => [m.team1, m.team2].includes(selectedTeam) && [m.team1, m.team2].includes(selectedOpponent),
+    );
+
+    if (preferredMatch && preferredMatch.matchId !== matchId) {
+      setMatchId(preferredMatch.matchId);
+    }
+  }, [meta.matches, selectedTeam, selectedOpponent, matchId]);
+
+  const canGetInsights = selectedTeam && selectedOpponent && selectedTeam !== selectedOpponent;
 
   const loadInsights = async () => {
     if (!canGetInsights) return;
@@ -100,8 +127,8 @@ const Commentator = () => {
     try {
       const { data } = await api.get('/commentator/insights', {
         params: {
-          team,
-          opponent,
+          team: selectedTeam,
+          opponent: selectedOpponent,
           venue,
           match_id: matchId || undefined,
         },
@@ -145,8 +172,13 @@ const Commentator = () => {
       <div className="bg-white rounded-xl border border-gray-100 p-5 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <div>
           <label className="block text-sm text-gray-700 mb-1">Team</label>
-          <select className="w-full border border-gray-300 rounded-md p-2" value={team} onChange={(e) => setTeam(e.target.value)}>
-            {(meta.teams || []).map((t) => (
+          <select
+            className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+            value={selectedTeam}
+            onChange={(e) => setSelectedTeam(e.target.value)}
+            disabled={matchupLoading || teams.length === 0}
+          >
+            {teams.map((t) => (
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
@@ -154,8 +186,13 @@ const Commentator = () => {
 
         <div>
           <label className="block text-sm text-gray-700 mb-1">Opponent</label>
-          <select className="w-full border border-gray-300 rounded-md p-2" value={opponent} onChange={(e) => setOpponent(e.target.value)}>
-            {(meta.teams || []).filter((t) => t !== team).map((t) => (
+          <select
+            className="w-full border border-gray-300 rounded-md p-2 disabled:bg-gray-100"
+            value={selectedOpponent}
+            onChange={(e) => setSelectedOpponent(e.target.value)}
+            disabled={matchupLoading || teams.length <= 1}
+          >
+            {teams.filter((t) => t !== selectedTeam).map((t) => (
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
@@ -217,7 +254,7 @@ const Commentator = () => {
             )}
           </div>
           <p className="text-sm text-gray-600 mt-2">
-            Current: Team A {insights.currentWinProbability?.probTeamA ?? 50}% | Team B {insights.currentWinProbability?.probTeamB ?? 50}%
+            Current: {selectedTeam || 'Team A'} {insights.currentWinProbability?.probTeamA ?? 50}% | {selectedOpponent || 'Team B'} {insights.currentWinProbability?.probTeamB ?? 50}%
           </p>
         </div>
 
