@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 CHROMA_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "chromadb")
 
 # Configure Gemini
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
 
 DEFAULT_MODEL_CANDIDATES = [
     "gemini-2.5-flash",
@@ -51,6 +52,10 @@ def _resolve_model_name() -> str:
     if env_model:
         return env_model
 
+    # Without an API key, model-listing calls can raise auth errors at import time.
+    if not GEMINI_API_KEY:
+        return DEFAULT_MODEL_CANDIDATES[-1]
+
     try:
         available = []
         for m in genai.list_models():
@@ -68,7 +73,7 @@ def _resolve_model_name() -> str:
                 return name
         if normalized:
             return sorted(normalized)[0]
-    except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+    except Exception as exc:
         logger.warning("Gemini model discovery failed, using fallback: %s", exc)
 
     return DEFAULT_MODEL_CANDIDATES[-1]

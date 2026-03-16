@@ -13,7 +13,9 @@ import streamlit as st
 
 _PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.abspath(os.path.join(_PAGE_DIR, "..", ".."))
-sys.path.append(_SRC_DIR)
+if _SRC_DIR not in sys.path:
+    # Put workspace src first so `genai` resolves to local package, not site-packages.
+    sys.path.insert(0, _SRC_DIR)
 from db import get_engine, query, gw, aw, render_sidebar_filters
 
 st.set_page_config(page_title="AI Chatbot", page_icon="💬", layout="wide")
