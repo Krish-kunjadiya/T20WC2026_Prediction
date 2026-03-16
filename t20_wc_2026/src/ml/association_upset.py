@@ -117,7 +117,7 @@ def train_upset_model():
 
     try:
         roc = round(roc_auc_score(y_test, y_proba) * 100, 2)
-    except Exception:
+    except ValueError:
         roc = "N/A (single class in test)"
 
     print(f"\n  📊 TEST METRICS:")
@@ -131,7 +131,7 @@ def train_upset_model():
     try:
         with open(metrics_path) as f:
             m = json.load(f)
-    except Exception:
+    except (FileNotFoundError, json.JSONDecodeError):
         m = {}
     m["upset_detection"] = {"roc_auc": str(roc)}
     with open(metrics_path, "w") as f:

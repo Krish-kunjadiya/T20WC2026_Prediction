@@ -39,7 +39,7 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         if pd.isna(value):
             return default
         return float(value)
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 

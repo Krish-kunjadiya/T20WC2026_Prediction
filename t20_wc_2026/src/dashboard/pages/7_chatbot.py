@@ -14,7 +14,7 @@ import streamlit as st
 _PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.abspath(os.path.join(_PAGE_DIR, "..", ".."))
 sys.path.append(_SRC_DIR)
-from db import get_engine, query
+from db import get_engine, query, gw, aw, render_sidebar_filters
 
 st.set_page_config(page_title="AI Chatbot", page_icon="💬", layout="wide")
 st.title("💬 CricAI — Powered by Gemini")
@@ -29,6 +29,41 @@ except Exception as exc:
     st.error(f"RAG engine not available: {exc}")
 
 engine = get_engine()
+render_sidebar_filters()
+_gw = gw()
+_aw = aw()
+
+
+def load_venue_options() -> list[str]:
+    """Load venue options while handling column-name drift in clean_venues."""
+    cols_df = query(
+        engine,
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'silver' AND table_name = 'clean_venues'
+        """,
+    )
+    cols = set(cols_df["column_name"].astype(str).tolist())
+
+    venue_col = "venue_name" if "venue_name" in cols else "stadium_name" if "stadium_name" in cols else None
+    city_expr = "city" if "city" in cols else "NULL::text"
+
+    if venue_col is None:
+        return ["Neutral Venue"]
+
+    venues_df = query(
+        engine,
+        f"""
+        SELECT {venue_col} AS venue_name, {city_expr} AS city
+        FROM silver.clean_venues
+        ORDER BY 1
+        """,
+    )
+    venues_df["venue_name"] = venues_df["venue_name"].fillna("Unknown Venue")
+    venues_df["city"] = venues_df["city"].fillna("Unknown")
+    options = [f"{r['venue_name']}, {r['city']}" for _, r in venues_df.iterrows()]
+    return options + ["Neutral Venue"]
 
 tabs = st.tabs(["🤖 CricAI Chatbot", "📋 Match Preview Generator", "💡 Quick Insights"])
 
@@ -51,12 +86,13 @@ with tabs[0]:
 
     st.divider()
 
+    gender_disp = st.session_state.get("gender", "male").title()
     if "messages" not in st.session_state:
         st.session_state.messages = [
             {
                 "role": "assistant",
                 "content": (
-                    "Hi! I'm CricAI, your T20 World Cup 2026 analyst. "
+                    f"Hi! I'm CricAI, your **{gender_disp} T20 World Cup 2026** analyst. "
                     "I have access to match results, player stats, "
                     "team records, and venue data from this tournament. "
                     "Ask me anything about the cricket."
@@ -102,10 +138,9 @@ with tabs[1]:
     st.markdown("### 📋 AI Match Preview Generator")
     st.caption("Generate professional pre-match analysis using Gemini AI")
 
-    matches = query(engine, "SELECT * FROM silver.clean_matches")
+    matches = query(engine, f"SELECT * FROM silver.clean_matches WHERE TRUE {_gw}")
     teams = sorted(pd.concat([matches["team1"], matches["team2"]]).unique().tolist())
-    venues = query(engine, "SELECT stadium_name, city FROM silver.clean_venues")
-    venue_list = [f"{r['stadium_name']}, {r['city']}" for _, r in venues.iterrows()] + ["Neutral Venue"]
+    venue_list = load_venue_options()
 
     c1, c2, c3 = st.columns(3)
     team_a = c1.selectbox("Team A", teams, key="prev_a")

@@ -1,0 +1,12 @@
+.venv
+venv
+env
+__pycache__
+.ipynb_checkpoints
+.git
+.gitignore
+*.pkl
+*.joblib
+*.parquet
+*.log
+notebooks/

@@ -8,6 +8,7 @@ Build ChromaDB vector knowledge base from:
 """
 
 import os
+import logging
 import sys
 from typing import Dict, List
 
@@ -19,6 +20,8 @@ from sqlalchemy import create_engine
 
 load_dotenv()
 sys.path.append(os.path.dirname(__file__))
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = (
     f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}"
@@ -236,8 +239,8 @@ def index_all_documents() -> None:
         client = chromadb.PersistentClient(path=CHROMA_PATH)
         try:
             client.delete_collection("cricket_knowledge")
-        except Exception:
-            pass
+        except (ValueError, RuntimeError, AttributeError) as exc:
+            logger.warning("Could not delete existing Chroma collection: %s", exc)
         collection = get_chroma_collection()
 
     all_docs = (

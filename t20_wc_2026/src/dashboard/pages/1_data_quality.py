@@ -13,13 +13,16 @@ import plotly.express as px
 import streamlit as st
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from db import get_engine, query  # noqa: E402
+from db import get_engine, query, gw, aw, render_sidebar_filters  # noqa: E402
 
 
 st.set_page_config(page_title="Data Quality & EDA", page_icon="📊", layout="wide")
 st.title("📊 Data Quality & Exploratory Data Analysis")
 
 engine = get_engine()
+render_sidebar_filters()
+_gw = gw()
+_aw = aw()
 
 # -- SECTION 1: DATA QUALITY SCORECARD ---------------------------------
 st.markdown("## 🔍 Data Quality Scorecard")
@@ -34,10 +37,11 @@ tables = {
 cols = st.columns(len(tables))
 for i, (tbl, label) in enumerate(tables.items()):
     try:
-        df = query(engine, f"SELECT * FROM {tbl} LIMIT 5000")
+        _tf = f"WHERE TRUE {_gw}" if tbl in ("silver.clean_matches", "silver.clean_deliveries", "silver.clean_players") else ""
+        df = query(engine, f"SELECT * FROM {tbl} {_tf} LIMIT 50000")
         null_pct = round(df.isnull().mean().mean() * 100, 1)
         dup_count = int(df.duplicated().sum())
-        row_count = int(query(engine, f"SELECT COUNT(*) AS c FROM {tbl}").iloc[0, 0])
+        row_count = int(query(engine, f"SELECT COUNT(*) AS c FROM {tbl} {_tf}").iloc[0, 0])
         health = "🟢 Healthy" if null_pct < 5 and dup_count == 0 else "🟡 Warning"
         with cols[i]:
             st.metric(f"{label} Rows", f"{row_count:,}")
@@ -52,7 +56,7 @@ st.divider()
 # -- SECTION 2: NULL HEATMAP -------------------------------------------
 st.markdown("## 🟥 Null Value Heatmap - Silver Layer")
 try:
-    matches = query(engine, "SELECT * FROM silver.clean_matches")
+    matches = query(engine, f"SELECT * FROM silver.clean_matches WHERE TRUE {_gw}")
     null_df = pd.DataFrame(
         {
             "Column": matches.columns,
@@ -77,11 +81,11 @@ st.divider()
 # -- SECTION 3: EDA CHARTS ---------------------------------------------
 st.markdown("## 📈 Exploratory Data Analysis")
 
-matches = query(engine, "SELECT * FROM silver.clean_matches")
-players = query(engine, "SELECT * FROM silver.clean_players")
+matches = query(engine, f"SELECT * FROM silver.clean_matches WHERE TRUE {_gw}")
+players = query(engine, f"SELECT * FROM silver.clean_players WHERE TRUE {_gw} {_aw}")
 deliveries = query(
     engine,
-    "SELECT batsman, batsman_runs, bowling_team FROM silver.clean_deliveries LIMIT 50000",
+    f"SELECT batsman, batsman_runs, bowling_team FROM silver.clean_deliveries WHERE TRUE {_gw} LIMIT 50000",
 )
 
 col1, col2 = st.columns(2)

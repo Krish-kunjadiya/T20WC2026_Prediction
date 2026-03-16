@@ -13,7 +13,7 @@ import plotly.express as px
 import streamlit as st
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from db import get_engine, query  # noqa: E402
+from db import get_engine, query, gw, aw, render_sidebar_filters  # noqa: E402
 
 
 st.set_page_config(page_title="Strategist", page_icon="🏆", layout="wide")
@@ -21,11 +21,15 @@ st.title("🏆 Tournament Strategist Dashboard")
 st.caption("Persona: Tournament Strategist | Focus: Standings, NRR, Qualification")
 
 engine = get_engine()
-matches = query(engine, "SELECT * FROM silver.clean_matches")
+render_sidebar_filters()
+_gw = gw()
+_aw = aw()
+matches = query(engine, f"SELECT * FROM silver.clean_matches WHERE TRUE {_gw}")
 
 # -- BUILD POINTS TABLE -------------------------------------------
 st.markdown("### 📋 Current Points Table")
 
+pt = None
 try:
     teams_all = pd.concat([matches["team1"], matches["team2"]]).unique()
     records = []
@@ -70,21 +74,23 @@ with col1:
     st.markdown("### 🧮 NRR Impact Simulator")
     st.caption("How does winning margin affect qualification?")
 
-    sel_team = st.selectbox("Select Team", pt["Team"].tolist())
+    _pt_teams = pt["Team"].tolist() if pt is not None and not pt.empty else []
+    sel_team = st.selectbox("Select Team", _pt_teams)
     margin_runs = st.slider("Win by X runs (hypothetical)", 1, 100, 20)
 
     if st.button("📊 Simulate NRR Impact"):
-        current_nrr = float(pt[pt["Team"] == sel_team]["NRR"].values[0])
-        new_nrr = round(current_nrr + margin_runs * 0.005, 3)
-        new_rank = int((pt["NRR"] > new_nrr).sum()) + 1
+        if pt is not None and not pt.empty and sel_team:
+            current_nrr = float(pt[pt["Team"] == sel_team]["NRR"].values[0])
+            new_nrr = round(current_nrr + margin_runs * 0.005, 3)
+            new_rank = int((pt["NRR"] > new_nrr).sum()) + 1
 
-        st.metric("Current NRR", f"{current_nrr:+.3f}")
-        st.metric("Projected NRR", f"{new_nrr:+.3f}", delta=f"+{margin_runs*0.005:.3f}")
-        st.metric(
-            "Projected Rank",
-            f"#{new_rank}",
-            delta=f"{'↑' if new_rank < int(pt[pt['Team']==sel_team].index[0]) else '↓'}",
-        )
+            st.metric("Current NRR", f"{current_nrr:+.3f}")
+            st.metric("Projected NRR", f"{new_nrr:+.3f}", delta=f"+{margin_runs*0.005:.3f}")
+            st.metric(
+                "Projected Rank",
+                f"#{new_rank}",
+                delta=f"{'↑' if new_rank < int(pt[pt['Team']==sel_team].index[0]) else '↓'}",
+            )
 
 # -- QUALIFICATION PROBABILITY ------------------------------------
 with col2:

@@ -14,7 +14,7 @@ _PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_PAGE_DIR, "..", "..", ".."))
 sys.path.append(_PROJECT_ROOT)
 
-from db import get_engine, query  # noqa: E402
+from db import get_engine, query, gw, aw, render_sidebar_filters  # noqa: E402
 
 
 st.set_page_config(page_title="Optimization", page_icon="⚙️", layout="wide")
@@ -22,6 +22,9 @@ st.title("⚙️ Optimization Dashboard")
 st.caption("Playing XI Optimizer | Batting Order | SHAP Explainability")
 
 engine = get_engine()
+render_sidebar_filters()
+_gw = gw()
+_aw = aw()
 
 try:
     from src.ml.optimizer import compute_shap_importance, optimize_batting_order, select_optimal_xi
@@ -40,7 +43,7 @@ with tabs[0]:
     st.markdown("### 🏏 Optimal Playing XI Selector")
     st.caption("Selects best 11 players using composite performance scoring")
 
-    teams = query(engine, "SELECT DISTINCT country FROM silver.clean_players ORDER BY country")
+    teams = query(engine, f"SELECT DISTINCT country FROM silver.clean_players WHERE TRUE {_gw} {_aw} ORDER BY country")
     team_list = ["All Teams"] + teams["country"].dropna().tolist()
     selected = st.selectbox("🌍 Select Country / Team", team_list)
 
@@ -97,7 +100,7 @@ with tabs[1]:
     st.markdown("### 📊 Batting Order Optimizer")
     st.caption("Arranges XI for maximum scoring potential")
 
-    teams2 = query(engine, "SELECT DISTINCT country FROM silver.clean_players ORDER BY country")
+    teams2 = query(engine, f"SELECT DISTINCT country FROM silver.clean_players WHERE TRUE {_gw} {_aw} ORDER BY country")
     team_list2 = ["All Teams"] + teams2["country"].dropna().tolist()
     selected2 = st.selectbox("🌍 Select Team", team_list2, key="bo_team")
 

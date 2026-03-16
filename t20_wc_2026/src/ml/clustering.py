@@ -86,7 +86,7 @@ def train_clustering():
     try:
         with open(metrics_path) as f:
             m = json.load(f)
-    except Exception:
+    except (FileNotFoundError, json.JSONDecodeError):
         m = {}
     m["player_clustering"] = {
         "silhouette_score": round(sil_score, 4),

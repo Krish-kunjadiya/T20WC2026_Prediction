@@ -30,7 +30,7 @@ def safe_float(val: Any, default: float = 0.0) -> float:
     """Convert value to float safely."""
     try:
         return float(str(val).replace("%", "").strip())
-    except Exception:
+    except (TypeError, ValueError, AttributeError):
         return default
 
 
@@ -38,7 +38,7 @@ def safe_int(val: Any, default: int = 0) -> int:
     """Convert value to int safely."""
     try:
         return int(float(str(val).strip()))
-    except Exception:
+    except (TypeError, ValueError, AttributeError):
         return default
 
 
@@ -183,7 +183,10 @@ def transform_deliveries() -> None:
         "is_wicket",
         "dismissal_kind",
     ]
-    df_clean = df[[c for c in keep if c in df.columns]].copy()
+    selected_cols = [c for c in keep if c in df.columns]
+    # Avoid an eager deep copy on large deliveries tables to keep memory usage stable.
+    df_clean = df.loc[:, selected_cols]
+    del df
 
     df_clean.to_sql("clean_deliveries", engine, schema="silver", if_exists="replace", index=False)
     print(f"  Written {len(df_clean)} rows -> silver.clean_deliveries")

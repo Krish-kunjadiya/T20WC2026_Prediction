@@ -18,13 +18,16 @@ import streamlit as st
 
 # Both the dashboard db module and the project results/ live relative to this file.
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from db import get_engine, query  # noqa: E402
+from db import get_engine, query, gw, aw, render_sidebar_filters  # noqa: E402
 
 st.set_page_config(page_title="ML Predictions", page_icon="🤖", layout="wide")
 st.title("🤖 ML Predictions Dashboard")
 st.caption("5 ML models: Match Outcome | Score | Clustering | Association | Upset")
 
 engine = get_engine()
+render_sidebar_filters()
+_gw = gw()
+_aw = aw()
 
 # models/ directory is two levels up from pages/ → src/dashboard/pages → t20_wc_2026/
 _PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,8 +58,8 @@ with tabs[0]:
 
     artifact = load_model("match_outcome_xgb.pkl")
 
-    matches = query(engine, "SELECT * FROM silver.clean_matches")
-    deliveries = query(engine, "SELECT * FROM silver.clean_deliveries LIMIT 50000")
+    matches = query(engine, f"SELECT * FROM silver.clean_matches WHERE TRUE {_gw}")
+    deliveries = query(engine, f"SELECT * FROM silver.clean_deliveries WHERE TRUE {_gw} LIMIT 50000")
     teams = sorted(pd.concat([matches["team1"], matches["team2"]]).unique())
 
     c1, c2, c3 = st.columns(3)
@@ -245,7 +248,7 @@ with tabs[4]:
     st.markdown("### ⚠️ Upset Probability Detector")
     artifact = load_model("upset_detector_lr.pkl")
 
-    matches_up = query(engine, "SELECT * FROM silver.clean_matches")
+    matches_up = query(engine, f"SELECT * FROM silver.clean_matches WHERE TRUE {_gw}")
     teams_up = sorted(pd.concat([matches_up["team1"], matches_up["team2"]]).unique())
 
     fav = st.selectbox("🏆 Favourite Team (higher ranked)", teams_up, key="up_fav")

@@ -5,6 +5,7 @@ RAG Engine using:
 """
 
 import os
+import logging
 from typing import Dict, List, Optional
 
 import chromadb
@@ -13,6 +14,8 @@ from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 CHROMA_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "chromadb")
 
@@ -65,8 +68,8 @@ def _resolve_model_name() -> str:
                 return name
         if normalized:
             return sorted(normalized)[0]
-    except Exception:
-        pass
+    except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+        logger.warning("Gemini model discovery failed, using fallback: %s", exc)
 
     return DEFAULT_MODEL_CANDIDATES[-1]
 
